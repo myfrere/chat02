@@ -3,7 +3,7 @@ import streamlit as st
 from openai import OpenAI
 
 # 🔐 OpenAI 클라이언트 초기화 (Streamlit secrets에서 키 가져오기)
-api_key = st.secrets["OPENAI_API_KEY"]
+api_key = st.secrets["general"]["OPENAI_API_KEY"]
 
 if not api_key or not api_key.startswith("sk-"):
     st.error("❌ 올바른 OpenAI API 키가 설정되어 있지 않습니다. Streamlit Secrets를 확인하세요.")
