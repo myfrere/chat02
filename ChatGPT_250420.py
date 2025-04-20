@@ -14,33 +14,40 @@ api_key = st.secrets["general"].get("OPENAI_API_KEY", "")
 if not api_key or not api_key.startswith("sk-"):
     st.error("❌ 올바른 OpenAI API 키가 설정되어 있지 않습니다. Streamlit Secrets를 확인하세요.")
     st.stop()
+
 client = OpenAI(api_key=api_key)
 
 # 📦 Load/Save conversation history
 def load_history(path: str) -> list:
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except json.JSONDecodeError as e:
+        st.error(f"JSON decoding error: {e}")
     return []
 
 def save_history(path: str, msgs: list):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(msgs, f, ensure_ascii=False, indent=2)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(msgs, f, ensure_ascii=False, indent=2)
+    except IOError as e:
+        st.error(f"Error saving history: {e}")
 
 # 📄 Read uploaded files
 def read_uploaded_file(uploaded) -> str:
     try:
         if uploaded.type == "text/plain":
             return uploaded.getvalue().decode('utf-8')
-        if uploaded.type == "application/pdf":
+        elif uploaded.type == "application/pdf":
             reader = PdfReader(uploaded)
             return "\n".join(p.extract_text() or "" for p in reader.pages)
-        if "wordprocessingml.document" in uploaded.type:
+        elif "wordprocessingml.document" in uploaded.type:
             doc = docx.Document(uploaded)
             return "\n".join(p.text for p in doc.paragraphs)
-        if "spreadsheetml.sheet" in uploaded.type:
+        elif "spreadsheetml.sheet" in uploaded.type:
             df = pd.read_excel(uploaded)
-            return df.to_csv(index=False, sep='\t')  # Use a tab separator to preserve formatting
+            return df.to_csv(index=False, sep='\t')
     except Exception as e:
         st.error(f"파일 읽기 중 오류: {e}")
     return ""
@@ -70,16 +77,16 @@ with st.form("chat_form", clear_on_submit=False):
     user_input = st.text_area("You:", height=120)
     submitted = st.form_submit_button("전송")
 
-if submitted and (user_input or file_content):
-    content = (user_input + "\n" + file_content).strip()
+if submitted and (user_input.strip() or file_content.strip()):
+    content = f"{user_input.strip()}\n{file_content.strip()}".strip()
     st.session_state.messages.append({"role": "user", "content": content})
 
     msgs = [system_message] + st.session_state.messages
     try:
         with st.spinner("💬 Liel이 응답 중..."):
             resp = client.chat.completions.create(model="gpt-4o", messages=msgs)
-        reply = resp.choices[0].message.content
-        st.session_state.messages.append({"role": "assistant", "content": reply})
+            reply = resp.choices[0].message.content
+            st.session_state.messages.append({"role": "assistant", "content": reply})
     except Exception as e:
         st.error(f"⚠️ 오류 발생: {e}")
 
