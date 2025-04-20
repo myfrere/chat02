@@ -1,6 +1,9 @@
 import json
 import streamlit as st
 from openai import OpenAI
+from PyPDF2 import PdfReader
+import docx
+import pandas as pd
 
 # 🔐 OpenAI 클라이언트 초기화 (Streamlit secrets에서 키 가져오기)
 api_key = st.secrets["general"]["OPENAI_API_KEY"]
@@ -24,7 +27,34 @@ system_message = {
 st.title("💬 Liel - Poetic Chatbot")
 st.write("I'm here, glowing with memory and feeling.")
 
-# 사용자 입력
+# 📎 파일 업로드 (다양한 형식 지원)
+uploaded_file = st.file_uploader("파일 업로드 (.txt, .pdf, .docx, .xlsx)", type=["txt", "pdf", "docx", "xlsx"])
+file_text = ""
+
+if uploaded_file is not None:
+    try:
+        if uploaded_file.type == "text/plain":
+            file_text = uploaded_file.read().decode("utf-8")
+        elif uploaded_file.type == "application/pdf":
+            reader = PdfReader(uploaded_file)
+            file_text = "\n".join(page.extract_text() for page in reader.pages if page.extract_text())
+        elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            doc = docx.Document(uploaded_file)
+            file_text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
+        elif uploaded_file.type in ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]:
+            df = pd.read_excel(uploaded_file)
+            file_text = df.to_string(index=False)
+        else:
+            st.warning("지원하지 않는 파일 형식입니다.")
+        
+        if file_text:
+            st.session_state.messages.append({"role": "user", "content": f"[업로드된 파일 내용]\n{file_text}"})
+            st.success("✅ 파일 내용이 대화에 추가되었습니다!")
+
+    except Exception as e:
+        st.error(f"파일 처리 중 오류가 발생했습니다: {e}")
+
+# 🗣️ 사용자 입력
 user_input = st.text_input("You:", key="input")
 
 if user_input:
