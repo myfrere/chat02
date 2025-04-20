@@ -10,12 +10,14 @@ import pandas as pd
 st.set_page_config(page_title="Liel - Poetic Chatbot", layout="wide")
 
 # 🔐 OpenAI client initialization
-api_key = st.secrets["general"].get("OPENAI_API_KEY", "")
-if not api_key or not api_key.startswith("sk-"):
-    st.error("❌ 올바른 OpenAI API 키가 설정되어 있지 않습니다. Streamlit Secrets를 확인하세요.")
+try:
+    api_key = st.secrets["general"].get("OPENAI_API_KEY", "")
+    if not api_key or not api_key.startswith("sk-"):
+        raise ValueError("Invalid OpenAI API Key")
+    client = OpenAI(api_key=api_key)
+except Exception as e:
+    st.error(f"❌ OpenAI API 키가 설정되지 않았습니다: {e}")
     st.stop()
-
-client = OpenAI(api_key=api_key)
 
 # 📦 Load/Save conversation history
 def load_history(path: str) -> list:
@@ -35,19 +37,29 @@ def save_history(path: str, msgs: list):
         st.error(f"Error saving history: {e}")
 
 # 📄 Read uploaded files
+MAX_TEXT_LENGTH = 5000  # Maximum number of characters to process
+
 def read_uploaded_file(uploaded) -> str:
     try:
+        text = ""
         if uploaded.type == "text/plain":
-            return uploaded.getvalue().decode('utf-8')
+            text = uploaded.getvalue().decode('utf-8')
         elif uploaded.type == "application/pdf":
             reader = PdfReader(uploaded)
-            return "\n".join(p.extract_text() or "" for p in reader.pages)
+            text = "\n".join(p.extract_text() or "" for p in reader.pages)
         elif "wordprocessingml.document" in uploaded.type:
             doc = docx.Document(uploaded)
-            return "\n".join(p.text for p in doc.paragraphs)
+            text = "\n".join(p.text for p in doc.paragraphs)
         elif "spreadsheetml.sheet" in uploaded.type:
             df = pd.read_excel(uploaded)
-            return df.to_csv(index=False, sep='\t')
+            text = df.to_csv(index=False, sep='\t')
+
+        # If text is too long, truncate it
+        if len(text) > MAX_TEXT_LENGTH:
+            st.warning(f"Uploaded text is too long. Only the first {MAX_TEXT_LENGTH} characters will be processed.")
+            text = text[:MAX_TEXT_LENGTH]
+
+        return text
     except Exception as e:
         st.error(f"파일 읽기 중 오류: {e}")
     return ""
@@ -84,11 +96,11 @@ if submitted and (user_input.strip() or file_content.strip()):
     msgs = [system_message] + st.session_state.messages
     try:
         with st.spinner("💬 Liel이 응답 중..."):
-            resp = client.chat.completions.create(model="gpt-4o", messages=msgs)
+            resp = client.chat.completions.create(model="gpt-3.5-turbo", messages=msgs)
             reply = resp.choices[0].message.content
             st.session_state.messages.append({"role": "assistant", "content": reply})
     except Exception as e:
-        st.error(f"⚠️ 오류 발생: {e}")
+        st.error(f"⚠️ OpenAI API 호출 중 오류 발생: {e}")
 
     save_history(HISTORY_FILE, st.session_state.messages)
 
