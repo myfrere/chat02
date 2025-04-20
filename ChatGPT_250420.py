@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import json
 import os
 from openai import OpenAI
@@ -98,4 +97,4 @@ while True:
     # 대화 기록 저장
     with open(history_file, "w", encoding="utf-8") as f:
         json.dump(user_messages, f, ensure_ascii=False, indent=2)
->>>>>>> df16da41c9b05d46377436b6403607ee5abbb6f2
+
