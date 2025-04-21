@@ -149,7 +149,7 @@ def read_file(uploaded_file_content_bytes, filename, file_type) -> Tuple[str, Op
         return '', f"파일 처리 중 오류 발생: {e}"
 
 
-# summarize_document: tokenizer parameter is now _tokenizer for caching
+# summarize_document: _tokenizer parameter for caching
 @st.cache_data(show_spinner=False)
 def summarize_document(text: str, filename: str, model: str, _tokenizer: tiktoken.Encoding) -> Tuple[str, Optional[str]]:
     """주어진 텍스트를 청크로 나누어 모델로 요약."""
@@ -168,7 +168,6 @@ def summarize_document(text: str, filename: str, model: str, _tokenizer: tiktoke
         progress = (i + 1) / total_chunks
         progress_bar.progress(progress, text=f"'{filename}' 요약 중... [{i+1}/{total_chunks}]")
 
-        # Use _tokenizer here
         chunk_tokens = num_tokens_from_string(chunk, _tokenizer)
         model_limit = MODEL_CONTEXT_LIMITS.get(model, 8192)
         if chunk_tokens > model_limit - 500:
@@ -283,7 +282,6 @@ if 'uploaded_image_for_next_prompt' not in st.session_state:
 # ------------------------------------------------------------------
 st.sidebar.title("⚙️ 설정")
 
-# gpt-4o-mini 모델 포함
 MODEL = st.sidebar.selectbox(
     '모델 선택 (멀티모달 지원)',
     MULTIMODAL_VISION_MODELS,
@@ -380,9 +378,35 @@ st.caption(
     "분석적이고 논리적인 대화 상대, Liel입니다. 파일을 업로드하거나 질문해주세요."
 )
 
-# ------------------------------------------------------------------
-# FILE UPLOAD UI
-# ------------------------------------------------------------------
+
+# Display chat history first
+st.markdown("---")
+st.subheader("대화")
+
+msgs_to_display = [msg for msg in st.session_state.messages if msg['role'] != 'system']
+
+for message in msgs_to_display:
+    with st.chat_message(message["role"]):
+        content = message["content"]
+        if isinstance(content, str):
+            st.markdown(content)
+        elif isinstance(content, list):
+            for part in content:
+                if part.get("type") == "text" and "text" in part:
+                    st.markdown(part["text"])
+                elif part.get("type") == "image_url" and "image_url" in part and "url" in part["image_url"]:
+                      try:
+                          image_url = part["image_url"]["url"]
+                          header, base64_data = image_url.split(',')
+                          image_bytes = base64.b64decode(base64_data)
+                          image_type = header.split(':')[1].split(';')[0] if ':' in header and ';' in header else 'image/png'
+                          st.image(image_bytes, use_container_width=True)
+                      except Exception as e:
+                           logging.error(f"Error displaying image from multimodal message in history: {e}", exc_info=True)
+                           st.warning("⚠️ 이미지 표시 중 오류가 발생했습니다.")
+
+
+# --- File Upload UI (Moved to Bottom) ---
 uploaded_file = st.file_uploader(
     '파일 업로드 (txt, pdf, docx, xlsx, jpg, png)',
     type=['txt', 'pdf', 'docx', 'xlsx', 'jpg', 'png'],
@@ -391,6 +415,7 @@ uploaded_file = st.file_uploader(
 )
 
 # --- File Upload Handling and Queuing: Step 1 - Safely Capture File Info ---
+# Logic for Step 1 remains the same, but its execution position moved here
 logging.info(f"--- Start Streamlit Rerun ---")
 logging.info(f"Uploaded file state: {uploaded_file is not None}")
 
@@ -441,6 +466,7 @@ else:
 
 
 # --- File Upload Handling and Queuing: Step 2 - Process Captured Info ---
+# Logic for Step 2 remains the same, but its execution position moved here
 captured_info_by_key = st.session_state.get('file_info_to_process_safely_captured_by_key', None)
 
 if captured_info_by_key is not None and captured_info_by_key['simple_key'] not in st.session_state.processed_file_keys:
@@ -497,6 +523,7 @@ else:
 
 
 # --- Main Summarization Processing: Step 3 - Summarize Text ---
+# Logic for Step 3 remains the same, but its execution position moved here
 if st.session_state.get('file_to_summarize', None) is not None and st.session_state.file_to_summarize['simple_key'] not in st.session_state.processed_file_keys:
 
     file_info_to_process = st.session_state.file_to_summarize
@@ -509,7 +536,6 @@ if st.session_state.get('file_to_summarize', None) is not None and st.session_st
 
     with st.spinner(f"'{filename_to_process}' 처리 및 요약 중..."):
         tokenizer = get_tokenizer();
-        # 매개변수 이름 'tokenizer'를 '_tokenizer'로 변경하여 캐싱 오류 해결
         summary, summary_error = summarize_document(file_content_to_process, filename_to_process, MODEL, tokenizer)
 
         if summary_error:
@@ -527,7 +553,7 @@ else:
     logging.info("Step 3: file_to_summarize is None or already processed.")
 
 
-# Display summary expander
+# Display summary expander (remains in its logical place after file processing)
 if st.session_state.doc_summaries:
     with st.expander("📚 업로드된 문서 요약 보기", expanded=False):
         for fname in sorted(st.session_state.doc_summaries.keys()):
@@ -547,36 +573,12 @@ if st.session_state.doc_summaries:
         #      st.rerun()
 
 
-# Display chat history
-st.markdown("---")
-st.subheader("대화")
-
-msgs_to_display = [msg for msg in st.session_state.messages if msg['role'] != 'system']
-
-for message in msgs_to_display:
-    with st.chat_message(message["role"]):
-        content = message["content"]
-        if isinstance(content, str):
-            st.markdown(content)
-        elif isinstance(content, list):
-            for part in content:
-                if part.get("type") == "text" and "text" in part:
-                    st.markdown(part["text"])
-                elif part.get("type") == "image_url" and "image_url" in part and "url" in part["image_url"]:
-                      try:
-                          image_url = part["image_url"]["url"]
-                          header, base64_data = image_url.split(',')
-                          image_bytes = base64.b64decode(base64_data)
-                          image_type = header.split(':')[1].split(';')[0] if ':' in header and ';' in header else 'image/png'
-                          st.image(image_bytes, use_container_width=True) # use_container_width 적용
-                      except Exception as e:
-                           logging.error(f"Error displaying image from multimodal message in history: {e}", exc_info=True)
-                           st.warning("⚠️ 이미지 표시 중 오류가 발생했습니다.")
-
-
 # ------------------------------------------------------------------
 # CHAT INPUT & RESPONSE GENERATION (with Streaming)
 # ------------------------------------------------------------------
+
+# File upload logic and processing steps are now placed BEFORE the chat input.
+
 if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
     logging.info(f"Chat input detected: '{prompt}'")
     user_message_content: Any = prompt
@@ -621,7 +623,7 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
                           header, base64_data = image_url.split(',')
                           image_bytes = base64.b64decode(base64_data)
                           image_type = header.split(':')[1].split(';')[0] if ':' in header and ';' in header else 'image/png'
-                          st.image(image_bytes, use_container_width=True) # use_container_width 적용
+                          st.image(image_bytes, use_container_width=True)
                       except Exception as e:
                            logging.error(f"Error displaying image from multimodal message in chat area: {e}", exc_info=True)
                            st.warning("⚠️ 이미지 표시 중 오류가 발생했습니다.")
@@ -745,4 +747,4 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
 
 # --- Footer or additional info ---
 st.sidebar.markdown("---")
-st.sidebar.caption("Liel Chatbot v1.7.9 (텍스트 파일 캐싱 오류 수정)") # 버전 및 상태 업데이트
+st.sidebar.caption("Liel Chatbot v1.7.9 (파일 업로드 위치 이동)") # 버전 및 상태 업데이트
