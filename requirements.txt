@@ -1,6 +1,7 @@
-openai
-streamlit
-PyPDF2
-python-docx
-pandas
-openpyxl
+streamlit>=1.30.0 # 스트림릿 최신 버전 유지 권장
+openai>=1.10.0   # OpenAI 최신 버전 유지 권장
+pypdf>=4.0.0
+python-docx>=1.1.0
+pandas>=2.0.0
+openpyxl>=3.1.0  # pandas가 xlsx 파일 처리를 위해 필요
+tiktoken>=0.6.0
