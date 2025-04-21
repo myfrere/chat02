@@ -2,7 +2,7 @@ import json
 import os
 import streamlit as st
 from openai import OpenAI
-from pypdf import PdfReader
+from pypypdf import PdfReader
 import docx
 import pandas as pd
 from time import sleep
@@ -219,19 +219,60 @@ MODE = st.sidebar.radio('응답 모드', ('Poetic', 'Logical'), index=0, key='mo
 st.sidebar.markdown("---")
 st.sidebar.subheader("관리")
 
-if st.sidebar.button("🧹 대화 및 문서 요약 초기화"):
-    st.session_state.messages = []
-    st.session_state.doc_summaries = {}
-    st.session_state.processed_file_ids = set()
-    if os.path.exists(HISTORY_FILE):
-        try:
-            os.remove(HISTORY_FILE)
-            logging.info(f"History file {HISTORY_FILE} removed.")
-            st.sidebar.success("대화 기록 파일이 삭제되었습니다.")
-        except OSError as e:
-            st.sidebar.error(f"기록 파일 삭제 실패: {e}")
-            logging.error(f"Failed to remove history file {HISTORY_FILE}: {e}")
-    st.rerun()
+# "초기화" 버튼 대신 "세션 내용 다운로드" 버튼을 이 위치에 배치합니다.
+def build_full_session_content() -> str:
+    """문서 요약과 전체 대화 기록을 합쳐 텍스트로 만듭니다."""
+    parts = []
+    timestamp = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+    parts.append(f"Liel Chat Session Content - {timestamp}")
+    parts.append(f"Model: {MODEL}, Mode: {MODE}\n")
+
+    if st.session_state.doc_summaries:
+        parts.append("===== Uploaded Document Summaries =====")
+        for fname, summ in st.session_state.doc_summaries.items():
+            parts.append(f"\n--- Summary: {fname} ---")
+            parts.append(summ)
+            parts.append("-" * (len(fname) + 16))
+        parts.append("\n" + "=" * 30 + "\n")
+
+    parts.append("===== Conversation History =====")
+    if not st.session_state.messages:
+         parts.append("(No conversation yet)")
+    else:
+        for m in st.session_state.messages:
+            role_icon = "👤 User" if m['role'] == 'user' else "🤖 Liel"
+            parts.append(f"\n{role_icon}:\n{m['content']}")
+            parts.append("-" * 20)
+
+    return '\n'.join(parts)
+
+# 대화나 문서 요약이 있을 때만 다운로드 버튼 표시
+if st.session_state.messages or st.session_state.doc_summaries:
+    session_content_txt = build_full_session_content()
+    download_filename = f"liel_session_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.txt"
+    st.sidebar.download_button(
+        label="📥 현재 세션 내용 다운로드", # 버튼 레이블 변경
+        data=session_content_txt.encode('utf-8'), # UTF-8 인코딩 명시
+        file_name=download_filename,
+        mime='text/plain',
+        help="업로드된 문서 요약과 현재까지의 대화 기록 전체를 텍스트 파일로 다운로드합니다." # 도움말 변경
+    )
+
+# 필요하다면 초기화 버튼을 다른 곳에 두거나, 삭제하지 않고 유지할 수도 있습니다.
+# 만약 그래도 초기화 버튼이 필요하다면 아래 주석을 해제하고 위치를 조정하세요.
+# if st.sidebar.button("🔄 대화 및 문서 요약 초기화"):
+#     st.session_state.messages = []
+#     st.session_state.doc_summaries = {}
+#     st.session_state.processed_file_ids = set()
+#     if os.path.exists(HISTORY_FILE):
+#         try:
+#             os.remove(HISTORY_FILE)
+#             logging.info(f"History file {HISTORY_FILE} removed.")
+#             st.sidebar.success("대화 기록 파일이 삭제되었습니다.")
+#         except OSError as e:
+#             st.sidebar.error(f"기록 파일 삭제 실패: {e}")
+#             logging.error(f"Failed to remove history file {HISTORY_FILE}: {e}")
+#     st.rerun()
 
 
 # ------------------------------------------------------------------
@@ -285,7 +326,7 @@ def summarize_document(text: str, filename: str, model: str, tokenizer: tiktoken
         if chunk_tokens > MAX_CONTEXT_TOKENS - 500: # 프롬프트/응답 여유 공간
              warning_msg = f"Chunk {i+1} is very long ({chunk_tokens} tokens), summarization might be truncated or fail."
              logging.warning(warning_msg)
-             # summaries.append(f"(청크 {i+1} 너무 길어 요약 건너뜀)") # 건너뛰기보다 시도
+             # summaries.append(f"(청크 {i+1} 너무 길어 요약 건너김)") # 건너뛰기보다 시도
              # continue
 
         try:
@@ -357,11 +398,12 @@ if st.session_state.doc_summaries:
     with st.expander("📚 업로드된 문서 요약 보기", expanded=False):
         for fname, summ in st.session_state.doc_summaries.items():
             st.text_area(f"요약: {fname}", summ, height=150, key=f"summary_display_{fname}", disabled=True)
-        if st.button("모든 요약 지우기", key="clear_summaries_btn"):
-            st.session_state.doc_summaries = {}
-            st.session_state.processed_file_ids = set()
-            logging.info("Document summaries cleared by user.")
-            st.rerun()
+        # 여기서 문서 요약만 지우는 버튼을 추가할 수도 있습니다.
+        # if st.button("문서 요약만 지우기", key="clear_doc_summaries_btn"):
+        #    st.session_state.doc_summaries = {}
+        #    st.session_state.processed_file_ids = set()
+        #    logging.info("Document summaries cleared by user.")
+        #    st.rerun()
 
 
 # ------------------------------------------------------------------
@@ -485,46 +527,6 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
     if full_response: # 오류 메시지 포함하여 기록
         st.session_state.messages.append({'role': 'assistant', 'content': full_response})
         save_history(HISTORY_FILE, st.session_state.messages)
-
-# ------------------------------------------------------------------
-# DOWNLOAD FULL SUMMARY (SIDEBAR)
-# ------------------------------------------------------------------
-def build_full_summary() -> str:
-    """문서 요약과 전체 대화 기록을 합쳐 텍스트로 만듭니다."""
-    parts = []
-    timestamp = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
-    parts.append(f"Liel Chat Summary - {timestamp}")
-    parts.append(f"Model: {MODEL}, Mode: {MODE}\n")
-
-    if st.session_state.doc_summaries:
-        parts.append("===== Uploaded Document Summaries =====")
-        for fname, summ in st.session_state.doc_summaries.items():
-            parts.append(f"\n--- Summary: {fname} ---")
-            parts.append(summ)
-            parts.append("-" * (len(fname) + 16))
-        parts.append("\n" + "=" * 30 + "\n")
-
-    parts.append("===== Conversation History =====")
-    if not st.session_state.messages:
-         parts.append("(No conversation yet)")
-    else:
-        for m in st.session_state.messages:
-            role_icon = "👤 User" if m['role'] == 'user' else "🤖 Liel"
-            parts.append(f"\n{role_icon}:\n{m['content']}")
-            parts.append("-" * 20)
-
-    return '\n'.join(parts)
-
-if st.session_state.messages or st.session_state.doc_summaries:
-    summary_txt = build_full_summary()
-    download_filename = f"liel_chat_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.txt"
-    st.sidebar.download_button(
-        label="📥 전체 대화 내용 다운로드",
-        data=summary_txt.encode('utf-8'), # UTF-8 인코딩 명시
-        file_name=download_filename,
-        mime='text/plain',
-        help="현재까지의 문서 요약과 대화 기록 전체를 텍스트 파일로 다운로드합니다."
-    )
 
 # --- Footer or additional info ---
 st.sidebar.markdown("---")
