@@ -2,7 +2,8 @@ import json
 import os
 import streamlit as st
 from openai import OpenAI
-from pypypdf import PdfReader
+# 아래 줄의 오타를 수정했습니다.
+from pypdf import PdfReader
 import docx
 import pandas as pd
 from time import sleep
@@ -378,7 +379,7 @@ if uploaded_file is not None:
             if read_error:
                 st.error(f"'{filename}' 파일 읽기 실패: {read_error}")
             elif not file_content:
-                st.warning(f"'{filename}' 파일 내용이 비어 있습니다. 요약을 건너<0xEB><0x82><xAC>니다.")
+                st.warning(f"'{filename}' 파일 내용이 비어 있습니다. 요약을 건너김니다.")
             else:
                 tokenizer = get_tokenizer()
                 summary, summary_error = summarize_document(file_content, filename, MODEL, tokenizer)
@@ -485,6 +486,7 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
         conversation_context.extend(history_context)
         tokens_used += history_tokens_added
 
+
         # 최종 컨텍스트 토큰 수 로깅
         logging.info(f"Context constructed with {tokens_used} tokens for model {MODEL}.")
         # logging.debug(f"Final conversation context: {conversation_context}") # 필요시 상세 로깅
@@ -527,6 +529,7 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
     if full_response: # 오류 메시지 포함하여 기록
         st.session_state.messages.append({'role': 'assistant', 'content': full_response})
         save_history(HISTORY_FILE, st.session_state.messages)
+
 
 # --- Footer or additional info ---
 st.sidebar.markdown("---")
