@@ -30,7 +30,7 @@ MODEL_CONTEXT_LIMITS = {
     "gpt-4-turbo": 128000,
     "gpt-4o-mini": 128000, # gpt-4o-mini의 컨텍스트 제한 추가
 }
-# gpt-4o-mini 모델 추가
+# gpt-4o-mini 모델 포함
 MULTIMODAL_VISION_MODELS = ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini"] # 멀티모달 지원 모델 목록
 
 DEFAULT_ENCODING = "cl100k_base"
@@ -282,10 +282,11 @@ if 'uploaded_image_for_next_prompt' not in st.session_state:
 # ------------------------------------------------------------------
 st.sidebar.title("⚙️ 설정")
 
+# gpt-4o-mini를 기본 모델로 설정
 MODEL = st.sidebar.selectbox(
     '모델 선택 (멀티모달 지원)',
     MULTIMODAL_VISION_MODELS,
-    index=MULTIMODAL_VISION_MODELS.index("gpt-4o") if "gpt-4o" in MULTIMODAL_VISION_MODELS else 0
+    index=MULTIMODAL_VISION_MODELS.index("gpt-4o-mini") if "gpt-4o-mini" in MULTIMODAL_VISION_MODELS else 0 # gpt-4o-mini를 기본으로 설정
 )
 MAX_CONTEXT_TOKENS = MODEL_CONTEXT_LIMITS.get(MODEL, 4096)
 
@@ -338,7 +339,7 @@ def build_full_session_content() -> str:
     return '\n'.join(parts)
 
 
-# Download Button remains the same
+# Download Button remains the same (no split functionality)
 if [msg for msg in st.session_state.messages if msg['role'] != 'system'] or st.session_state.doc_summaries:
     session_content_txt = build_full_session_content()
     download_filename = f"liel_session_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.txt"
@@ -498,23 +499,25 @@ if captured_info_by_key is not None and captured_info_by_key['simple_key'] not i
          logging.info("Step 2: Triggering rerun after queuing image.")
          st.rerun()
 
-    else:
+    else: # Handle text-based files: Read content and queue for summarization (Step 3)
         logging.info(f"Step 2: File {file_info_to_process['name']} is text-based. Reading content.")
         content_text, read_error = read_file(file_info_to_process['bytes'], file_info_to_process['name'], file_info_to_process['type'])
 
         if read_error:
             st.error(f"'{file_info_to_process['name']}' 파일 읽기 실패: {read_error}")
-            st.session_state.processed_file_keys.add(file_info_to_process['simple_key'])
+            st.session_state.processed_file_keys.add(file_info_to_process['simple_key']) # 오류 발생 시에도 키 추가하여 루프 방지
         elif not content_text:
             st.warning(f"'{file_info_to_process['name']}' 파일 내용이 비어 있습니다. 요약을 건너뜁니다.")
-            st.session_state.processed_file_keys.add(file_info_to_process['simple_key'])
+            st.session_state.processed_file_keys.add(file_info_to_process['simple_key']) # 내용 없어도 키 추가하여 루프 방지
         else:
             st.session_state.file_to_summarize = {
                 'simple_key': file_info_to_process['simple_key'],
                 'name': file_info_to_process['name'],
                 'content': content_text
             }
-            logging.info(f"File '{file_info_to_process['name']}' text content queued for summarization (Step 3).")
+            # 텍스트 파일을 Step 3으로 넘기기 위해 큐에 넣은 직후 processed_file_keys에 추가
+            st.session_state.processed_file_keys.add(file_info_to_process['simple_key'])
+            logging.info(f"File '{file_info_to_process['name']}' text content queued for summarization (Step 3) and key added to processed.")
             logging.info("Step 2: Triggering rerun after queuing text for summarization.")
             st.rerun()
 
@@ -524,30 +527,47 @@ else:
 
 # --- Main Summarization Processing: Step 3 - Summarize Text ---
 # Logic for Step 3 remains the same, but its execution position moved here
-if st.session_state.get('file_to_summarize', None) is not None and st.session_state.file_to_summarize['simple_key'] not in st.session_state.processed_file_keys:
+if st.session_state.get('file_to_summarize', None) is not None and st.session_state.file_to_summarize['simple_key'] not in st.session_state.doc_summaries: # Check against doc_summaries keys if processed
 
     file_info_to_process = st.session_state.file_to_summarize
     file_simple_key_to_process = file_info_to_process['simple_key']
     filename_to_process = file_info_to_process['name']
     file_content_to_process = file_info_to_process['content']
 
-    logging.info(f"Step 3: file_to_summarize is NOT None and not processed. Starting summarization for {filename_to_process} (Key: {file_simple_key_to_process}).")
-    st.session_state.file_to_summarize = None
+    # Check processed_file_keys again here defensively, though ideally Step 2's fix prevents needing this
+    if file_simple_key_to_process in st.session_state.processed_file_keys and file_simple_key_to_process not in st.session_state.doc_summaries:
 
-    with st.spinner(f"'{filename_to_process}' 처리 및 요약 중..."):
-        tokenizer = get_tokenizer();
-        summary, summary_error = summarize_document(file_content_to_process, filename_to_process, MODEL, tokenizer)
+        logging.info(f"Step 3: file_to_summarize is NOT None and key found in processed_file_keys but not in doc_summaries. Starting summarization for {filename_to_process} (Key: {file_simple_key_to_process}).")
+        st.session_state.file_to_summarize = None # Clear this state now that we're processing it
 
-        if summary_error:
-             st.warning(f"'{filename_to_process}' 요약 중 일부 오류 발생:\n{summary_error}")
+        with st.spinner(f"'{filename_to_process}' 처리 및 요약 중..."):
+            tokenizer = get_tokenizer();
+            summary, summary_error = summarize_document(file_content_to_process, filename_to_process, MODEL, tokenizer)
 
-        st.session_state.doc_summaries[filename_to_process] = summary
-        st.session_state.processed_file_keys.add(file_simple_key_to_process)
+            if summary_error:
+                 st.warning(f"'{filename_to_process}' 요약 중 일부 오류 발생:\n{summary_error}")
 
-    st.success(f"📄 '{filename_to_process}' 업로드 및 요약 완료! 요약 내용이 대화 컨텍스트에 포함됩니다.")
-    logging.info(f"Successfully processed and summarized: {filename_to_process}.")
-    logging.info("Step 3: Triggering rerun after summarization.")
-    st.rerun()
+            st.session_state.doc_summaries[filename_to_process] = summary
+            # The key was already added to processed_file_keys in Step 2.
+            # We could add it again here, but it's redundant if the Step 2 fix works.
+            # st.session_state.processed_file_keys.add(file_simple_key_to_process)
+
+        st.success(f"📄 '{filename_to_process}' 업로드 및 요약 완료! 요약 내용이 대화 컨텍스트에 포함됩니다.")
+        logging.info(f"Successfully processed and summarized: {filename_to_process}.")
+        logging.info("Step 3: Summarization finished. Next interaction will proceed.")
+        # No explicit rerun needed after Step 3 if it successfully processes;
+        # the next user interaction or file upload will trigger the next run.
+
+    else:
+         # This case should ideally not be reached if Step 2's fix prevents re-queuing unprocessed files,
+         # or if the file was already fully processed (in doc_summaries).
+         # If it is reached, it might indicate a state inconsistency.
+         logging.info(f"Step 3: file_to_summarize state inconsistent or already summarized (Key: {file_simple_key_to_process}). Skipping summarization.")
+         # Clear potentially stale file_to_summarize state if the key is already processed
+         if file_simple_key_to_process in st.session_state.processed_file_keys:
+              st.session_state.file_to_summarize = None
+              logging.info("Step 3: Cleared stale file_to_summarize state.")
+
 
 else:
     logging.info("Step 3: file_to_summarize is None or already processed.")
@@ -747,4 +767,4 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
 
 # --- Footer or additional info ---
 st.sidebar.markdown("---")
-st.sidebar.caption("Liel Chatbot v1.7.9 (파일 업로드 위치 이동)") # 버전 및 상태 업데이트
+st.sidebar.caption("Liel Chatbot v1.7.11 (텍스트 파일 업로드 루프 수정)") # 버전 및 상태 업데이트
