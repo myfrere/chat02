@@ -5,160 +5,170 @@ from openai import OpenAI
 from PyPDF2 import PdfReader
 import docx
 import pandas as pd
+from time import sleep
 
 # ------------------------------------------------------------------
-#  CONFIGURATION & CONSTANTS
+# CONFIG & CONSTANTS
 # ------------------------------------------------------------------
-# GPT‑3.5‑turbo context ≈ 16 385 tokens.  We reserve ample headroom.
-MAX_TOTAL_TOKENS   = 12_000   # safe upper‑bound ~= 48 k chars
-CHUNK_CHAR_SIZE    = 2_000    # split uploaded text into 2 k‑char chunks
-RESERVED_TOKENS    = 1_000    # system / assistant headroom
-SUMMARY_PREFIX     = "**Summary:**"
-FILE_CHUNK_PREFIX  = "[File chunk]"  # hidden from UI / history
-HISTORY_FILE       = "chat_history.json"
+MAX_TOTAL_TOKENS = 12_000      # safe cap (gpt‑3.5‑turbo context ≤ 16 385)
+CHUNK_CHAR_SIZE  = 2_000       # characters per chunk for summarization
+RESERVED_TOKENS  = 1_000       # buffer for reply/system
+SUMMARY_PREFIX   = "**Summary:**"
+HISTORY_FILE     = "chat_history.json"
 
 # ------------------------------------------------------------------
-#  STREAMLIT PAGE SETUP
+# PAGE & OPENAI CLIENT
 # ------------------------------------------------------------------
 st.set_page_config(page_title="Liel – Poetic Chatbot", layout="wide")
 
-# ------------------------------------------------------------------
-#  OPENAI INITIALISATION
-# ------------------------------------------------------------------
 try:
     api_key = st.secrets.get("general", {}).get("OPENAI_API_KEY", "")
     if not api_key.startswith("sk-"):
-        raise ValueError("Missing / invalid OpenAI API key in secrets.")
+        raise ValueError("Invalid OpenAI API key.")
     client = OpenAI(api_key=api_key)
 except Exception as e:
     st.error(f"❌ OpenAI init failed: {e}")
     st.stop()
 
 # ------------------------------------------------------------------
-#  UTILITY FUNCTIONS
+# HELPERS
 # ------------------------------------------------------------------
 
-def approx_tokens(text: str) -> int:
-    """Coarse token estimate (4 chars ≈ 1 token)."""
-    return len(text) // 4
-
-def is_chunk(msg: dict) -> bool:
-    return msg.get("content", "").startswith(FILE_CHUNK_PREFIX)
+def approx_tokens(txt: str) -> int:
+    return max(1, len(txt) // 3)  # 3 chars ≈ 1 token upper‑bound
 
 @st.cache_data
-def read_file(uploaded) -> str:
-    """Extract plain text from uploaded file types."""
+def read_file(file) -> str:
     try:
-        if uploaded.type == "text/plain":
-            return uploaded.getvalue().decode("utf-8")
-        if uploaded.type == "application/pdf":
-            reader = PdfReader(uploaded)
-            return "\n".join(p.extract_text() or "" for p in reader.pages)
-        if "wordprocessingml.document" in uploaded.type:
-            return "\n".join(p.text for p in docx.Document(uploaded).paragraphs)
-        if "spreadsheetml.sheet" in uploaded.type:
-            return pd.read_excel(uploaded).to_csv(index=False, sep="\t")
+        if file.type == "text/plain":
+            return file.getvalue().decode("utf-8")
+        if file.type == "application/pdf":
+            return "\n".join(p.extract_text() or "" for p in PdfReader(file).pages)
+        if "wordprocessingml.document" in file.type:
+            return "\n".join(p.text for p in docx.Document(file).paragraphs)
+        if "spreadsheetml.sheet" in file.type:
+            return pd.read_excel(file).to_csv(index=False, sep="\t")
     except Exception as e:
         st.error(f"File read error: {e}")
     return ""
 
-@st.cache_data
-def load_history(path: str) -> list:
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                msgs = json.load(f)
-            return [m for m in msgs if not is_chunk(m)]
-        except Exception:
-            return []
-    return []
-
-def save_history(path: str, msgs: list):
+@st.cache_data(show_spinner=False)
+def load_history(path: str):
+    if not os.path.exists(path):
+        return []
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump([m for m in msgs if not is_chunk(m)], f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        st.error(f"History save error: {e}")
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_history(path: str, msgs):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(msgs, f, ensure_ascii=False, indent=2)
 
 # ------------------------------------------------------------------
-#  SESSION STATE
+# SESSION STATE
 # ------------------------------------------------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = load_history(HISTORY_FILE)
-if "file_chunks" not in st.session_state:
-    st.session_state.file_chunks = []
+if "doc_summaries" not in st.session_state:
+    st.session_state.doc_summaries = {}   # {filename: summary_str}
 if "file_ids" not in st.session_state:
     st.session_state.file_ids = set()
 
 # ------------------------------------------------------------------
-#  SYSTEM PROMPT
+# MODE & SYSTEM PROMPT
 # ------------------------------------------------------------------
 MODE = st.sidebar.radio("Mode", ("Poetic", "Logical"))
 SYSTEM_PROMPT = {
     "role": "system",
     "content": (
-        "You are Liel, a poetic, emotionally intelligent chatbot with lyrical grace." if MODE == "Poetic" else
-        "You are Liel, a highly analytical assistant with clarity and precision."
-    )
+        "You are Liel, a poetic, emotionally intelligent chatbot with lyrical grace."
+        if MODE == "Poetic"
+        else "You are Liel, a highly analytical assistant with clarity and precision."
+    ),
 }
 
 # ------------------------------------------------------------------
-#  UI HEADER
+# UI HEADER
 # ------------------------------------------------------------------
-st.title("💬 Liel – Poetic Chatbot")
+st.title("💬 Liel – Poetic Chatbot")
 st.markdown("I'm here, glowing with memory and feeling.")
 
 # ------------------------------------------------------------------
-#  FILE UPLOAD HANDLER
+# UPLOAD & AUTO‑SUMMARIZE
 # ------------------------------------------------------------------
-up = st.file_uploader("Upload file (txt/pdf/docx/xlsx)", type=["txt", "pdf", "docx", "xlsx"])
-if up and up.name not in st.session_state.file_ids:
-    txt = read_file(up)
-    st.session_state.file_ids.add(up.name)
-    st.session_state.messages.append({"role": "user", "content": f"📄 Uploaded: {up.name}"})
-    st.session_state.file_chunks.extend(
-        [txt[i:i+CHUNK_CHAR_SIZE] for i in range(0, len(txt), CHUNK_CHAR_SIZE)]
-    )
+CHUNK_PROMPT = "Summarize this chunk in 2‒3 short Korean bullet points."  # adjust for language
+
+def summarize_chunks(chunks):
+    summaries = []
+    prog = st.progress(0, text="Summarizing uploaded file…")
+    step = 1 / max(1, len(chunks))
+    for i, ch in enumerate(chunks, 1):
+        try:
+            res = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": CHUNK_PROMPT},
+                    {"role": "user", "content": ch},
+                ],
+            )
+            summaries.append(res.choices[0].message.content.strip())
+        except Exception as e:
+            summaries.append("(요약 실패)" + str(e))
+        prog.progress(min(1.0, i * step))
+        sleep(0.1)
+    prog.empty()
+    return "\n".join(summaries)
+
+uploaded = st.file_uploader("Upload file (txt/pdf/docx/xlsx)", type=["txt","pdf","docx","xlsx"])
+if uploaded and uploaded.name not in st.session_state.file_ids:
+    full_text = read_file(uploaded)
+    chunks = [full_text[i:i+CHUNK_CHAR_SIZE] for i in range(0, len(full_text), CHUNK_CHAR_SIZE)]
+    summary_text = summarize_chunks(chunks)
+    st.session_state.doc_summaries[uploaded.name] = summary_text
+    st.session_state.file_ids.add(uploaded.name)
+    st.session_state.messages.append({"role": "user", "content": f"📄 Uploaded & summarized: {uploaded.name}"})
 
 # ------------------------------------------------------------------
-#  CHAT INPUT & OPENAI CALL
+# CHAT INPUT
 # ------------------------------------------------------------------
 if user_prompt := st.chat_input("You:"):
     st.session_state.messages.append({"role": "user", "content": user_prompt})
 
-    # Build conversation under context limit
-    conversation = [SYSTEM_PROMPT]
-    used_tokens = approx_tokens(SYSTEM_PROMPT["content"]) + RESERVED_TOKENS
+    # Build conversation under token budget
+    conv = [SYSTEM_PROMPT]
+    budget = approx_tokens(SYSTEM_PROMPT["content"]) + RESERVED_TOKENS
 
-    # Include recent chat history (newest last)
-    for m in reversed(st.session_state.messages):
-        t = approx_tokens(m["content"])
-        if used_tokens + t > MAX_TOTAL_TOKENS:
-            break
-        conversation.insert(1, m)
-        used_tokens += t
+    # include doc summaries (newest first)
+    for name, summ in list(st.session_state.doc_summaries.items())[::-1]:
+        tok = approx_tokens(summ)
+        if budget + tok > MAX_TOTAL_TOKENS:
+            continue
+        conv.append({"role": "system", "content": f"[Document {name} summary]\n{summ}"})
+        budget += tok
 
-    # Include file chunks (newest first)
-    for ch in reversed(st.session_state.file_chunks):
-        t = approx_tokens(ch)
-        if used_tokens + t > MAX_TOTAL_TOKENS:
+    # include recent chat
+    for msg in reversed(st.session_state.messages):
+        tok = approx_tokens(msg["content"])
+        if budget + tok > MAX_TOTAL_TOKENS:
             break
-        conversation.append({"role": "user", "content": f"{FILE_CHUNK_PREFIX} {ch}"})
-        used_tokens += t
+        conv.insert(1, msg)
+        budget += tok
 
     with st.spinner("Thinking…"):
         try:
-            res = client.chat.completions.create(model="gpt-3.5-turbo", messages=conversation)
-            reply = res.choices[0].message.content
+            res = client.chat.completions.create(model="gpt-3.5-turbo", messages=conv)
+            answer = res.choices[0].message.content
         except Exception as e:
-            reply = f"⚠️ API error: {e}"
+            answer = f"⚠️ API error: {e}"
 
-    st.session_state.messages.append({"role": "assistant", "content": reply})
-    st.chat_message("assistant").write(reply)
+    st.session_state.messages.append({"role": "assistant", "content": answer})
+    st.chat_message("assistant").write(answer)
     save_history(HISTORY_FILE, st.session_state.messages)
 
 # ------------------------------------------------------------------
-#  DISPLAY HISTORY
+# DISPLAY
 # ------------------------------------------------------------------
 for m in st.session_state.messages:
     st.chat_message(m['role']).write(m['content'])
