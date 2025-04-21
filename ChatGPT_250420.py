@@ -225,9 +225,6 @@ def load_history(path: str) -> List[Dict[str, str]]:
 # save_history remains the same (only saves text messages)
 def save_history(path: str, msgs: List[Dict[str, Any]]):
     """대화 기록을 JSON 파일에 저장합니다 (시스템 메시지 및 멀티모달 콘텐츠 제외)."""
-    # 현재 save_history는 content가 문자열인 메시지만 저장하도록 필터링합니다.
-    # 멀티모달 메시지를 저장하려면 저장 형식을 고민해야 합니다.
-    # 여기서는 기존 save_history 로직 유지 (텍스트 메시지만 저장)
     msgs_to_save = [msg for msg in msgs if msg['role'] != 'system' and isinstance(msg.get('content'), str)]
 
     if not msgs_to_save:
@@ -269,7 +266,7 @@ if 'doc_summaries' not in st.session_state:
 if 'processed_file_keys' not in st.session_state:
      st.session_state.processed_file_keys: set = set()
 
-# file_to_summarize queue (remains the same, uses file ID internally)
+# file_to_summarize queue (remains the same, uses simple key internally now)
 if 'file_to_summarize' not in st.session_state:
     st.session_state.file_to_summarize: Optional[Dict] = None
 
@@ -277,7 +274,7 @@ if 'file_to_summarize' not in st.session_state:
 if 'file_info_to_process_safely_captured_by_key' not in st.session_state:
      st.session_state.file_info_to_process_safely_captured_by_key: Optional[Dict] = None
 
-# State for image data waiting for the next prompt (uses file ID internally)
+# State for image data waiting for the next prompt (uses simple key internally)
 if 'uploaded_image_for_next_prompt' not in st.session_state:
     st.session_state.uploaded_image_for_next_prompt: Optional[Dict] = None
 
@@ -361,7 +358,7 @@ if st.sidebar.button("🔄 대화 및 문서 요약 초기화"):
     st.session_state.doc_summaries = {}
     st.session_state.processed_file_keys = set() # Clear processed keys
     st.session_state.file_to_summarize = None
-    st.session_state.file_info_to_process_safely_captured_by_key = None # Clear new state variable
+    st.session_state.file_info_to_process_safely_captured_by_key = None
     st.session_state.uploaded_image_for_next_prompt = None
 
     if os.path.exists(HISTORY_FILE):
@@ -417,30 +414,32 @@ logging.info(f"Uploaded file state: {uploaded_file is not None}")
 if uploaded_file is not None:
     logging.info(f"Step 1: uploaded_file is NOT None. Processing potential file.")
 
-    # Attempt to capture file details using a simple key (name+size) to bypass .id error
+    # Attempt to capture file details using a simple key (name+size)
     try:
-        # Get name, size, type, and bytes - these might raise AttributeError
+        # Accessing name, size, type, and bytes - these might raise AttributeError
         file_name_now = uploaded_file.name
-        file_size_now = uploaded_file.size # Use size for simple key
+        file_size_now = uploaded_file.size
         file_type_now = uploaded_file.type
-        file_bytes_now = uploaded_file.getvalue() # Get bytes immediately
+        file_bytes_now = uploaded_file.getvalue()
 
-        # Create a simple key based on name and size (less robust than ID but might work)
+        # Create a simple key based on name and size
         file_simple_key = f"{file_name_now}_{file_size_now}"
 
         logging.info(f"Step 1: Successfully accessed file attributes for {file_name_now}. Simple Key: {file_simple_key}.")
 
-        # Check if this file (by simple key) is already fully processed or waiting for prompt
+        # Check if this file is already fully processed OR is currently waiting in the capture state OR waiting for prompt
         is_already_processed_by_key = file_simple_key in st.session_state.processed_file_keys
+        is_already_safely_captured_by_key = st.session_state.get('file_info_to_process_safely_captured_by_key', None) is not None and st.session_state.file_info_to_process_safely_captured_by_key.get('simple_key') == file_simple_key
+        # Check if the image is already the one waiting for the next prompt (using simple_key from its state)
         is_current_image_for_prompt_by_key = st.session_state.get('uploaded_image_for_next_prompt', None) is not None and st.session_state.uploaded_image_for_next_prompt.get('simple_key') == file_simple_key
 
-        logging.info(f"Step 1: File {file_name_now} state checks (by key): processed={is_already_processed_by_key}, waiting_image={is_current_image_for_prompt_by_key}")
+
+        logging.info(f"Step 1: File {file_name_now} state checks (by key): processed={is_already_processed_by_key}, safely_captured={is_already_safely_captured_by_key}, waiting_image={is_current_image_for_prompt_by_key}")
 
 
-        # If the file is detected and not in any known processing/processed state (by key)
-        if not is_already_processed_by_key and not is_current_image_for_prompt_by_key:
+        # ONLY attempt capture if the file is detected and NOT already in a handled state
+        if not is_already_processed_by_key and not is_already_safely_captured_by_key and not is_current_image_for_prompt_by_key:
             logging.info(f"Step 1: File {file_name_now} (Key: {file_simple_key}) is new/unhandled. Capturing details.")
-            # Store captured details in the new session state variable
             st.session_state.file_info_to_process_safely_captured_by_key = {
                 'simple_key': file_simple_key,
                 'name': file_name_now,
@@ -448,7 +447,8 @@ if uploaded_file is not None:
                 'bytes': file_bytes_now
             }
             logging.info(f"Step 1: Stored captured details for {file_name_now} by key. Triggering rerun.")
-            st.rerun()
+            st.rerun() # Trigger Step 2
+
         else:
              logging.info(f"Step 1: File {file_name_now} (Key: {file_simple_key}) is already in a handled state. Skipping capture.")
 
@@ -459,7 +459,6 @@ if uploaded_file is not None:
         # Do NOT capture or rerun here. Let the natural Streamlit reruns handle it.
         pass
     except Exception as e:
-         # Catch any other unexpected errors during capture
          logging.error(f"Step 1: Unexpected error during uploaded_file access: {e}", exc_info=True)
          pass
 else:
@@ -480,7 +479,7 @@ if captured_info_by_key is not None and captured_info_by_key['simple_key'] not i
     logging.info("Step 2: Cleared file_info_to_process_safely_captured_by_key state.")
 
     # Now process the captured_info (either image or text) using data from the state variable
-    file_info_to_process = captured_info_by_key # Use data from the state variable
+    file_info_to_process = captured_info_by_key
 
     # Handle image files: store bytes to be sent with the next prompt
     if file_info_to_process['type'] in ['image/jpeg', 'image/png']:
@@ -495,7 +494,7 @@ if captured_info_by_key is not None and captured_info_by_key['simple_key'] not i
          }
 
          st.info(f"✨ 이미지가 업로드되었습니다! 다음 질문과 함께 모델에게 전송됩니다.")
-         st.session_state.processed_file_keys.add(file_info_to_process['simple_key']) # Mark as processed using the simple key
+         st.session_state.processed_file_keys.add(file_info_to_process['simple_key']) # Mark as processed
 
          # Display the image in the chat history area immediately
          logging.info(f"Step 2: Displaying image {file_info_to_process['name']} in chat message.")
@@ -507,7 +506,6 @@ if captured_info_by_key is not None and captured_info_by_key['simple_key'] not i
 
     else: # Handle text-based files: Read content and queue for summarization (Step 3)
         logging.info(f"Step 2: File {file_info_to_process['name']} is text-based. Reading content.")
-        # read_file uses bytes, name, type from the state variable
         content_text, read_error = read_file(file_info_to_process['bytes'], file_info_to_process['name'], file_info_to_process['type'])
 
         if read_error:
@@ -544,7 +542,6 @@ if st.session_state.get('file_to_summarize', None) is not None and st.session_st
 
     with st.spinner(f"'{filename_to_process}' 처리 및 요약 중..."):
         tokenizer = get_tokenizer();
-        # summarize_document takes text, filename, model, tokenizer - no key needed internally
         summary, summary_error = summarize_document(file_content_to_process, filename_to_process, MODEL, tokenizer)
 
         if summary_error:
@@ -574,7 +571,7 @@ if st.session_state.doc_summaries:
              st.session_state.processed_file_keys = set() # Clear processed keys
              st.session_state.file_to_summarize = None
              st.session_state.file_info_to_process_safely_captured_by_key = None
-             st.session_state.uploaded_image_for_next_prompt = None # Clear pending image
+             st.session_state.uploaded_image_for_next_prompt = None
 
              save_history(HISTORY_FILE, st.session_state.messages) # Save empty history
              logging.info("Document summaries and file processing state cleared by user.")
@@ -697,7 +694,7 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
                 summary_msg = {'role': 'system', 'content': f"[문서 '{fname}' 요약 참고]\n{summ}"}
                 summary_tokens_estimate = num_tokens_from_messages([summary_msg], tokenizer)
 
-                if available_tokens_for_context_estimate - (doc_tokens_added_estimate + summary_tokens_estimate) >= 0:
+                if available_tokens_for_context_estimate - (doc_tokens_added_estimate + summary_tokens_added_estimate) >= 0: # Fix: Added doc_tokens_added_estimate
                     doc_summary_context.append(summary_msg)
                     doc_tokens_added_estimate += summary_tokens_estimate
                 else:
@@ -785,4 +782,4 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
 
 # --- Footer or additional info ---
 st.sidebar.markdown("---")
-st.sidebar.caption("Liel Chatbot v1.7.4 (파일 처리 우회 시도)") # 버전 및 상태 업데이트
+st.sidebar.caption("Liel Chatbot v1.7.5 (무한 루프 해결 시도)") # 버전 및 상태 업데이트
