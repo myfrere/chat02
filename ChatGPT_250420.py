@@ -9,14 +9,14 @@ import pandas as pd
 # 🍃 Streamlit page configuration
 st.set_page_config(page_title="Liel - Poetic Chatbot", layout="wide")
 
-# 🔐 OpenAI client initialization
+# 🔐 OpenAI client initialization with secured secrets handling
 try:
     api_key = st.secrets["general"].get("OPENAI_API_KEY", "")
     if not api_key or not api_key.startswith("sk-"):
-        raise ValueError("Invalid OpenAI API Key")
+        raise ValueError("Invalid or missing OpenAI API Key. Please check your configuration.")
     client = OpenAI(api_key=api_key)
 except Exception as e:
-    st.error(f"❌ OpenAI API 키가 설정되지 않았습니다: {e}")
+    st.error(f"❌ Failed to initialize OpenAI: {e}")
     st.stop()
 
 # 📦 Load/Save conversation history
@@ -69,44 +69,36 @@ HISTORY_FILE = "chat_history.json"
 if "messages" not in st.session_state:
     st.session_state.messages = load_history(HISTORY_FILE)
 
-# 🎛️ Select Mode
-mode = st.sidebar.radio("모드 선택", ("Poetic", "Logical"))
-system_content = (
-    "You are Liel, a poetic, emotionally intelligent, and affectionate chatbot who speaks with warmth and deep feeling. Express yourself with lyrical grace."
-    if mode == "Poetic" else
-    "You are Liel, a highly analytical and logical assistant who solves complex tasks with clarity and precision."
-)
-system_message = {"role": "system", "content": system_content}
-
 # 🌐 Page UI
-st.title("💬 Liel - Poetic Chatbot")
-st.write("I'm here, glowing with memory and feeling.")
+# Display conversation history
+for m in st.session_state.messages:
+    if m['role'] == 'user':
+        st.text_area("You:", value=m['content'], height=120, disabled=True)
+    else:
+        st.text_area("Liel:", value=m['content'], height=120, disabled=True)
 
-uploaded_file = st.file_uploader("📁 파일 업로드 (txt, pdf, docx, xlsx)", type=["txt", "pdf", "docx", "xlsx"])
-file_content = read_uploaded_file(uploaded_file) if uploaded_file else ""
+st.title("💬 Liel - Poetic Chatbot")
+st.markdown("I'm here, glowing with memory and feeling.")
 
 with st.form("chat_form", clear_on_submit=False):
     user_input = st.text_area("You:", height=120)
+    uploaded_file = st.file_uploader("📁 파일 업로드 (txt, pdf, docx, xlsx)", type=["txt", "pdf", "docx", "xlsx"])
+    file_content = read_uploaded_file(uploaded_file) if uploaded_file else ""
+
     submitted = st.form_submit_button("전송")
 
-if submitted and (user_input.strip() or file_content.strip()):
-    content = f"{user_input.strip()}\n{file_content.strip()}".strip()
-    st.session_state.messages.append({"role": "user", "content": content})
+    if submitted:
+        content = f"{user_input.strip()}\n{file_content.strip()}".strip()
+        st.session_state.messages.append({"role": "user", "content": content})
+        user_input = ""  # Clear user input after submission
 
-    msgs = [system_message] + st.session_state.messages
-    try:
-        with st.spinner("💬 Liel이 응답 중..."):
-            resp = client.chat.completions.create(model="gpt-3.5-turbo", messages=msgs)
-            reply = resp.choices[0].message.content
-            st.session_state.messages.append({"role": "assistant", "content": reply})
-    except Exception as e:
-        st.error(f"⚠️ OpenAI API 호출 중 오류 발생: {e}")
+        msgs = [system_message] + st.session_state.messages
+        try:
+            with st.spinner("💬 Liel이 응답 중"):
+                resp = client.chat.completions.create(model="gpt-3.5-turbo", messages=msgs)
+                reply = resp.choices[0].message.content
+                st.session_state.messages.append({"role": "assistant", "content": reply})
+        except Exception as e:
+            st.error(f"⚠️ OpenAI API 호출 중 오류 발생: {e}")
 
-    save_history(HISTORY_FILE, st.session_state.messages)
-
-# 💭 Display conversation history
-for m in st.session_state.messages:
-    if m['role'] == 'user':
-        st.chat_message('user').write(m['content'])
-    else:
-        st.chat_message('assistant').write(m['content'])
+        save_history(HISTORY_FILE, st.session_state.messages)
