@@ -16,6 +16,13 @@ MODEL = st.sidebar.selectbox(
     ('gpt-3.5-turbo', 'gpt-4', 'gpt-4-32k', 'gpt-4o')
 )
 MODE = st.sidebar.radio('Mode', ('Poetic', 'Logical'))
+# ------------------------------------------------------------------
+# Available models: gpt-3.5-turbo, gpt-4, gpt-4-32k, gpt-4o
+MODEL = st.sidebar.selectbox(
+    'Select model',
+    ('gpt-3.5-turbo', 'gpt-4', 'gpt-4-32k', 'gpt-4o')
+)
+MODE = st.sidebar.radio('Mode', ('Poetic', 'Logical'))
 )
 MODE = st.sidebar.radio('Mode', ('Poetic', 'Logical'))
 
