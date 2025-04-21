@@ -2,7 +2,6 @@ import json
 import os
 import streamlit as st
 from openai import OpenAI
-# 아래 줄의 오타를 수정했습니다.
 from pypdf import PdfReader
 import docx
 import pandas as pd
@@ -115,25 +114,25 @@ def num_tokens_from_messages(messages: List[Dict[str, str]], encoding: tiktoken.
 
 # allow_output_mutation=True 는 파일 객체와 같은 변경 가능한 객체를 캐시할 때 필요할 수 있음
 @st.cache_data(show_spinner=False, hash_funcs={docx.document.Document: id, pd.DataFrame: pd.util.hash_pandas_object})
-def read_file(uploaded_file) -> Tuple[str, Optional[str]]:
+def read_file(uploaded_file_content, filename, file_type) -> Tuple[str, Optional[str]]:
     """
-    업로드된 파일을 읽어 텍스트 내용을 반환합니다.
+    업로드된 파일의 내용을 (bytes 또는 buffer) 받아 텍스트 내용을 반환합니다.
     성공 시 (내용, None), 실패 시 ('', 에러 메시지) 반환
     """
     try:
-        file_type = uploaded_file.type
-        filename = uploaded_file.name
-        logging.info(f"Reading file: {filename} (Type: {file_type})")
+        logging.info(f"Reading file content for: {filename} (Type: {file_type})")
 
         if file_type == 'text/plain':
             try:
-                content = uploaded_file.getvalue().decode('utf-8')
+                content = uploaded_file_content.decode('utf-8')
             except UnicodeDecodeError:
                 logging.warning(f"UTF-8 decoding failed for {filename}, trying cp949.")
-                content = uploaded_file.getvalue().decode('cp949')
+                content = uploaded_file_content.decode('cp949')
             return content, None
         elif file_type == 'application/pdf':
-            reader = PdfReader(uploaded_file)
+            # PdfReader는 파일 경로 또는 파일류(file-like) 객체를 받습니다.
+            # uploaded_file_content가 BytesIO 객체라고 가정합니다.
+            reader = PdfReader(uploaded_file_content)
             text_parts = []
             for i, page in enumerate(reader.pages):
                 try:
@@ -144,17 +143,21 @@ def read_file(uploaded_file) -> Tuple[str, Optional[str]]:
                     logging.warning(f"Error extracting text from page {i+1} of {filename}: {page_err}")
             return '\n'.join(text_parts), None
         elif 'wordprocessingml.document' in file_type:
-            doc = docx.Document(uploaded_file)
+             # python-docx도 파일 경로 또는 파일류 객체를 받습니다.
+            doc = docx.Document(uploaded_file_content)
             return '\n'.join(p.text for p in doc.paragraphs), None
         elif 'spreadsheetml.sheet' in file_type:
-            df = pd.read_excel(uploaded_file, engine='openpyxl')
+             # pandas read_excel도 파일 경로 또는 파일류 객체를 받습니다.
+            df = pd.read_excel(uploaded_file_content, engine='openpyxl')
+            # 탭으로 구분된 CSV 형식으로 반환하여 텍스트로 사용
             return df.to_csv(index=False, sep='\t'), None
         else:
-            logging.warning(f"Unsupported file type: {file_type}")
+            logging.warning(f"Unsupported file type for reading: {file_type}")
             return '', f"지원하지 않는 파일 형식입니다: {file_type}"
     except Exception as e:
-        logging.error(f"Error reading file {uploaded_file.name}: {e}", exc_info=True)
-        return '', f"파일 처리 중 오류 발생: {e}"
+        logging.error(f"Error reading file content for {filename}: {e}", exc_info=True)
+        return '', f"파일 내용 처리 중 오류 발생: {e}"
+
 
 @st.cache_data(show_spinner=False)
 def load_history(path: str) -> List[Dict[str, str]]:
@@ -166,41 +169,64 @@ def load_history(path: str) -> List[Dict[str, str]]:
         with open(path, 'r', encoding='utf-8') as f:
             history = json.load(f)
             logging.info(f"Loaded {len(history)} messages from {path}.")
+            # 세션 시작 시 시스템 프롬프트와 일치하지 않는 시스템 메시지는 제외할 수 있습니다.
+            # history = [msg for msg in history if msg['role'] != 'system'] # 이전 시스템 메시지 로드 방지 (선택 사항)
             return history
     except json.JSONDecodeError:
         logging.warning(f"History file {path} is corrupted or invalid. Backing up and starting new history.")
         try:
-            backup_path = f"{path}.{pd.Timestamp.now().strftime('%Y%m%d%H%M%S')}.bak"
+            # corrupted 파일 백업 시점을 정확히 하기 위해 pd.Timestamp 대신 datetime 사용
+            import datetime
+            backup_path = f"{path}.{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.bak"
             os.rename(path, backup_path)
             logging.info(f"Corrupted history file backed up to {backup_path}")
+            st.sidebar.warning(f"대화 기록 파일이 손상되어 백업 후 새로 시작합니다: {os.path.basename(backup_path)}")
         except OSError as e:
             logging.error(f"Failed to backup corrupted history file {path}: {e}")
+            st.sidebar.error(f"손상된 기록 파일 백업 실패: {e}")
         return []
     except Exception as e:
         logging.error(f"Error loading history from {path}: {e}", exc_info=True)
+        st.sidebar.error(f"대화 기록 로드 중 오류 발생: {e}")
         return []
 
 
 def save_history(path: str, msgs: List[Dict[str, str]]):
     """대화 기록을 JSON 파일에 저장합니다."""
+    # 시스템 메시지는 저장하지 않습니다.
+    msgs_to_save = [msg for msg in msgs if msg['role'] != 'system']
     try:
+        # 디렉토리가 없으면 생성 (Streamlit Cloud / 일부 환경 대비)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump(msgs, f, ensure_ascii=False, indent=2)
-        # logging.info(f"Saved {len(msgs)} messages to {path}.") # 너무 자주 로깅될 수 있음
+            json.dump(msgs_to_save, f, ensure_ascii=False, indent=2)
+        # logging.info(f"Saved {len(msgs_to_save)} messages to {path}.") # 너무 자주 로깅될 수 있음
     except Exception as e:
-        st.error(f"대화 기록 저장 중 오류 발생: {e}")
+        # Streamlit Cloud에서 쓰기 권한이 없는 경우 에러 발생 가능
         logging.error(f"Error saving history to {path}: {e}", exc_info=True)
+        # st.error(f"대화 기록 저장 중 오류 발생: {e}") # 사용자에게 너무 자주 보일 수 있음
 
 
 # ------------------------------------------------------------------
 # SESSION STATE INITIALIZATION
 # ------------------------------------------------------------------
 if 'messages' not in st.session_state:
+    # history 로드 시 시스템 메시지는 제외하고 로드
     st.session_state.messages: List[Dict[str, str]] = load_history(HISTORY_FILE)
+    # 로드된 메시지가 비어있지 않다면, 첫 번째 메시지가 시스템 메시지인 경우 스킵합니다.
+    # 하지만 load_history에서 시스템 메시지를 제외하도록 수정했으므로 이중 체크는 불필요
+    # 필요에 따라 여기에 현재 시스템 프롬프트를 첫 메시지로 추가할 수 있습니다.
+    # 예: if not st.session_state.messages or st.session_state.messages[0]['role'] != 'system':
+    #         st.session_state.messages.insert(0, SYSTEM_PROMPT)
+
 if 'doc_summaries' not in st.session_state:
     st.session_state.doc_summaries: Dict[str, str] = {}
 if 'processed_file_ids' not in st.session_state:
     st.session_state.processed_file_ids: set = set()
+# 파일 처리 대기열 상태 추가
+if 'file_to_summarize' not in st.session_state:
+    st.session_state.file_to_summarize: Optional[Dict] = None
+
 
 # ------------------------------------------------------------------
 # SIDEBAR: MODEL, MODE SELECTION & OPTIONS
@@ -220,7 +246,7 @@ MODE = st.sidebar.radio('응답 모드', ('Poetic', 'Logical'), index=0, key='mo
 st.sidebar.markdown("---")
 st.sidebar.subheader("관리")
 
-# "초기화" 버튼 대신 "세션 내용 다운로드" 버튼을 이 위치에 배치합니다.
+# 세션 내용 다운로드 버튼
 def build_full_session_content() -> str:
     """문서 요약과 전체 대화 기록을 합쳐 텍스트로 만듭니다."""
     parts = []
@@ -237,18 +263,20 @@ def build_full_session_content() -> str:
         parts.append("\n" + "=" * 30 + "\n")
 
     parts.append("===== Conversation History =====")
-    if not st.session_state.messages:
+    # 시스템 메시지는 다운로드 내용에 포함하지 않습니다. (save_history와 일관성 유지)
+    msgs_to_include = [msg for msg in st.session_state.messages if msg['role'] != 'system']
+    if not msgs_to_include:
          parts.append("(No conversation yet)")
     else:
-        for m in st.session_state.messages:
+        for m in msgs_to_include:
             role_icon = "👤 User" if m['role'] == 'user' else "🤖 Liel"
             parts.append(f"\n{role_icon}:\n{m['content']}")
             parts.append("-" * 20)
 
     return '\n'.join(parts)
 
-# 대화나 문서 요약이 있을 때만 다운로드 버튼 표시
-if st.session_state.messages or st.session_state.doc_summaries:
+# 대화나 문서 요약(시스템 메시지 제외)이 있을 때만 다운로드 버튼 표시
+if [msg for msg in st.session_state.messages if msg['role'] != 'system'] or st.session_state.doc_summaries:
     session_content_txt = build_full_session_content()
     download_filename = f"liel_session_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.txt"
     st.sidebar.download_button(
@@ -259,32 +287,48 @@ if st.session_state.messages or st.session_state.doc_summaries:
         help="업로드된 문서 요약과 현재까지의 대화 기록 전체를 텍스트 파일로 다운로드합니다." # 도움말 변경
     )
 
-# 필요하다면 초기화 버튼을 다른 곳에 두거나, 삭제하지 않고 유지할 수도 있습니다.
-# 만약 그래도 초기화 버튼이 필요하다면 아래 주석을 해제하고 위치를 조정하세요.
-# if st.sidebar.button("🔄 대화 및 문서 요약 초기화"):
-#     st.session_state.messages = []
-#     st.session_state.doc_summaries = {}
-#     st.session_state.processed_file_ids = set()
-#     if os.path.exists(HISTORY_FILE):
-#         try:
-#             os.remove(HISTORY_FILE)
-#             logging.info(f"History file {HISTORY_FILE} removed.")
-#             st.sidebar.success("대화 기록 파일이 삭제되었습니다.")
-#         except OSError as e:
-#             st.sidebar.error(f"기록 파일 삭제 실패: {e}")
-#             logging.error(f"Failed to remove history file {HISTORY_FILE}: {e}")
-#     st.rerun()
+# 필요하다면 초기화 버튼을 다시 추가할 수 있습니다.
+if st.sidebar.button("🔄 대화 및 문서 요약 초기화"):
+    st.session_state.messages = []
+    st.session_state.doc_summaries = {}
+    st.session_state.processed_file_ids = set()
+    st.session_state.file_to_summarize = None # 처리 대기 파일도 초기화
+
+    # chat_history.json 파일 삭제
+    if os.path.exists(HISTORY_FILE):
+        try:
+            os.remove(HISTORY_FILE)
+            logging.info(f"History file {HISTORY_FILE} removed.")
+            st.sidebar.success("대화 기록 파일이 삭제되었습니다.")
+        except OSError as e:
+            st.sidebar.error(f"기록 파일 삭제 실패: {e}")
+            logging.error(f"Failed to remove history file {HISTORY_FILE}: {e}")
+    st.rerun()
 
 
 # ------------------------------------------------------------------
 # SYSTEM PROMPT DEFINITION
 # ------------------------------------------------------------------
+# SYSTEM_PROMPT 정의는 세션 시작 시 한번만 하거나, 모드가 바뀔 때 업데이트해야 합니다.
+# Streamlit은 매 실행마다 전체 스크립트를 돌므로 SYSTEM_PROMPT 정의 자체는 계속 일어나지만,
+# 이를 메시지 목록에 추가하는 로직은 신중해야 합니다.
 SYSTEM_PROMPT_CONTENT = (
     'You are Liel, a poetic, emotionally intelligent chatbot with lyrical grace. Respond with warmth, creativity, and empathy. Use rich language and metaphors when appropriate.'
     if MODE == 'Poetic' else
     'You are Liel, a highly analytical assistant focused on logic and precision. Provide clear, structured, and concise answers. Use bullet points or numbered lists for clarity when needed.'
 )
 SYSTEM_PROMPT = {'role': 'system', 'content': SYSTEM_PROMPT_CONTENT}
+
+# 세션이 시작될 때 (messages가 초기화될 때) 또는 모드가 변경될 때 시스템 프롬프트 추가
+# 매번 스크립트 실행 시 메시지 목록의 첫 요소가 시스템 프롬프트인지 확인하고,
+# 다르거나 없으면 업데이트/추가합니다.
+if not st.session_state.messages or st.session_state.messages[0]['role'] != 'system' or st.session_state.messages[0]['content'] != SYSTEM_PROMPT_CONTENT:
+     # 기존 시스템 메시지 제거
+     st.session_state.messages = [msg for msg in st.session_state.messages if msg['role'] != 'system']
+     # 새 시스템 메시지 추가
+     st.session_state.messages.insert(0, SYSTEM_PROMPT)
+     # 시스템 메시지 변경 시 history.json에 저장되지 않도록 save_history 함수에서 제외 처리 필요 (이미 구현됨)
+
 
 # ------------------------------------------------------------------
 # UI HEADER
@@ -297,68 +341,8 @@ st.caption(
 )
 
 # ------------------------------------------------------------------
-# FILE UPLOAD & AUTOMATIC SUMMARIZATION
+# FILE UPLOAD UI
 # ------------------------------------------------------------------
-#@st.cache_data # API 호출 포함, 캐싱 부적합
-def summarize_document(text: str, filename: str, model: str, tokenizer: tiktoken.Encoding) -> Tuple[str, Optional[str]]:
-    """
-    주어진 텍스트를 청크로 나누어 요약하고 결과를 합칩니다.
-    성공 시 (요약 내용, None), 실패 시 ('', 에러 메시지) 반환
-    """
-    if not text:
-        return "(문서 내용이 비어 있습니다)", None
-
-    summaries = []
-    chunks = [text[i:i + CHUNK_SIZE] for i in range(0, len(text), CHUNK_SIZE)]
-    total_chunks = len(chunks)
-    logging.info(f"Starting summarization for '{filename}' with {total_chunks} chunks.")
-
-    progress_text = f"'{filename}' 요약 중... (총 {total_chunks}개 청크)"
-    progress_bar = st.progress(0, text=progress_text)
-    summary_errors = []
-
-    for i, chunk in enumerate(chunks):
-        current_progress = (i + 1) / total_chunks
-        progress_bar.progress(current_progress, text=f"{progress_text} [{i+1}/{total_chunks}]")
-
-        # 청크 토큰 수 확인
-        chunk_tokens = num_tokens_from_string(chunk, tokenizer)
-        # 요약 모델 컨텍스트 한도 근처면 경고 (간단화 위해 여기서는 MAX_CONTEXT_TOKENS 사용)
-        if chunk_tokens > MAX_CONTEXT_TOKENS - 500: # 프롬프트/응답 여유 공간
-             warning_msg = f"Chunk {i+1} is very long ({chunk_tokens} tokens), summarization might be truncated or fail."
-             logging.warning(warning_msg)
-             # summaries.append(f"(청크 {i+1} 너무 길어 요약 건너김)") # 건너뛰기보다 시도
-             # continue
-
-        try:
-            response = client.chat.completions.create(
-                model=model, # 요약에도 동일 모델 사용 (또는 더 저렴한 모델 지정 가능)
-                messages=[
-                    {'role': 'system', 'content': CHUNK_PROMPT_FOR_SUMMARY},
-                    {'role': 'user', 'content': chunk}
-                ],
-                max_tokens=250, # 요약 길이 제한
-                temperature=0.3, # 낮은 온도
-                timeout=60 # 타임아웃 설정 (초)
-            )
-            summary_part = response.choices[0].message.content.strip()
-            summaries.append(summary_part)
-            sleep(0.15) # API 속도 제한 방지 (약간 증가)
-        except Exception as e:
-            error_msg = f"청크 {i+1} 요약 중 오류 발생: {e}"
-            st.warning(error_msg) # UI에 경고 표시
-            logging.error(f"Error summarizing chunk {i+1} of {filename}: {e}", exc_info=True)
-            summaries.append(f"(청크 {i+1} 요약 실패)")
-            summary_errors.append(error_msg)
-
-
-    progress_bar.empty()
-    full_summary = '\n'.join(summaries)
-    logging.info(f"Finished summarization for '{filename}'.")
-    error_report = "\n".join(summary_errors) if summary_errors else None
-    return full_summary, error_report
-
-
 uploaded_file = st.file_uploader(
     '파일 업로드 (txt, pdf, docx, xlsx)',
     type=['txt', 'pdf', 'docx', 'xlsx'],
@@ -366,45 +350,96 @@ uploaded_file = st.file_uploader(
     help="텍스트, PDF, 워드, 엑셀 파일을 업로드하면 내용을 요약하여 대화 컨텍스트에 포함합니다."
 )
 
+# --- 파일 업로드 처리 로직 (세션 상태 사용) ---
+# 파일 업로더 위젯에 새로운 파일 객체가 있는지 확인
 if uploaded_file is not None:
-    # 고유 ID 생성 (streamlit UploadedFile 객체의 내부 ID 사용)
-    file_id = uploaded_file.id
-    filename = uploaded_file.name
+    # 파일 객체의 고유 ID 사용 또는 다른 방법으로 파일 식별 (예: 이름, 크기 조합)
+    # st.rerun() 등으로 인해 uploaded_file 객체 자체가 None이 될 수 있으므로 ID를 먼저 확보
+    current_uploaded_file_id = uploaded_file.id # Streamlit 1.29.0 이상에서 지원
 
-    if file_id not in st.session_state.processed_file_ids:
-        logging.info(f"New file uploaded: {filename} (ID: {file_id})")
-        with st.spinner(f"'{filename}' 처리 및 요약 중..."):
-            file_content, read_error = read_file(uploaded_file)
+    # 이전에 처리했거나 현재 처리 대기 중인 파일인지 확인
+    # file_to_summarize 상태를 먼저 확인하여 중복 처리 방지
+    if 'file_to_summarize' not in st.session_state or \
+       st.session_state.file_to_summarize is None or \
+       st.session_state.file_to_summarize['id'] != current_uploaded_file_id: # 현재 파일과 다른 경우 새로 처리
+
+         if current_uploaded_file_id not in st.session_state.processed_file_ids:
+            logging.info(f"New file detected: {uploaded_file.name} (ID: {current_uploaded_file_id})")
+            # 파일 내용을 읽어서 세션 상태에 저장하고, 처리는 다음 Streamlit 실행 주기에 진행
+            # uploaded_file.getvalue()는 파일 객체 자체 또는 그 내용을 반환
+            file_content_bytes = uploaded_file.getvalue()
+            filename_to_process = uploaded_file.name
+            filetype_to_process = uploaded_file.type
+
+            # 파일 내용을 읽고 에러가 없으면 처리 대기 상태로 저장
+            # read_file 함수는 파일류 객체를 받도록 수정되었습니다.
+            import io
+            content_text, read_error = read_file(io.BytesIO(file_content_bytes), filename_to_process, filetype_to_process)
+
 
             if read_error:
-                st.error(f"'{filename}' 파일 읽기 실패: {read_error}")
-            elif not file_content:
-                st.warning(f"'{filename}' 파일 내용이 비어 있습니다. 요약을 건너김니다.")
+                st.error(f"'{filename_to_process}' 파일 읽기 실패: {read_error}")
+                # 실패한 파일도 processed_file_ids에 추가하여 다시 시도하지 않도록 할 수 있습니다 (선택 사항)
+                # st.session_state.processed_file_ids.add(current_uploaded_file_id)
+            elif not content_text:
+                st.warning(f"'{filename_to_process}' 파일 내용이 비어 있습니다. 요약을 건너뜍니다.")
+                st.session_state.processed_file_ids.add(current_uploaded_file_id) # 빈 파일도 처리 완료로 표시
             else:
-                tokenizer = get_tokenizer()
-                summary, summary_error = summarize_document(file_content, filename, MODEL, tokenizer)
+                # 처리할 파일 정보를 세션 상태에 저장
+                st.session_state.file_to_summarize = {
+                    'id': current_uploaded_file_id,
+                    'name': filename_to_process,
+                    'content': content_text # 텍스트 내용을 저장
+                }
+                logging.info(f"File '{filename_to_process}' stored in session state for processing.")
+                # 파일 업로드 감지 후 바로 Rerun을 호출하여 파일 처리 로직이 시작되도록 합니다.
+                st.rerun() # Streamlit 재실행 (파일 처리 로직으로 이동)
 
-                if summary_error:
-                    st.warning(f"'{filename}' 요약 중 일부 오류 발생:\n{summary_error}")
 
-                st.session_state.doc_summaries[filename] = summary
-                st.session_state.processed_file_ids.add(file_id)
-                st.success(f"📄 '{filename}' 업로드 및 요약 완료!")
-                logging.info(f"Successfully processed and summarized file: {filename}")
-                # 요약 완료 후 리런하여 Expander 표시
-                st.rerun()
+# --- 파일 처리 및 요약 로직 (세션 상태에서 파일 정보를 읽어옴) ---
+# 세션 상태에 처리 대기 중인 파일이 있고, 아직 처리되지 않은 경우
+if 'file_to_summarize' in st.session_state and \
+   st.session_state.file_to_summarize is not None and \
+   st.session_state.file_to_summarize['id'] not in st.session_state.processed_file_ids:
+
+    file_info = st.session_state.file_to_summarize
+    file_id_to_process = file_info['id']
+    filename_to_process = file_info['name']
+    file_content_to_process = file_info['content']
+
+    # 처리 대기열에서 파일 정보 제거
+    st.session_state.file_to_summarize = None
+
+    logging.info(f"Starting processing file from session state: {filename_to_process} (ID: {file_id_to_process})")
+
+    with st.spinner(f"'{filename_to_process}' 처리 및 요약 중..."):
+        tokenizer = get_tokenizer()
+        # summarize_document 함수는 텍스트 내용을 바로 받도록 되어 있습니다.
+        summary, summary_error = summarize_document(file_content_to_process, filename_to_process, MODEL, tokenizer) # summarize_document contains API calls and progress bar
+
+        if summary_error:
+             st.warning(f"'{filename_to_process}' 요약 중 일부 오류 발생:\n{summary_error}")
+
+        st.session_state.doc_summaries[filename_to_process] = summary
+        st.session_state.processed_file_ids.add(file_id_to_process) # 처리 완료 ID 추가
+
+    st.success(f"📄 '{filename_to_process}' 업로드 및 요약 완료!")
+    logging.info(f"Successfully processed and summarized file: {filename_to_process}")
+    # 요약 완료 후 Rerun을 호출하여 UI (예: 요약 Expander)를 업데이트합니다.
+    st.rerun()
+
 
 # 요약된 문서 표시 (Expander 사용)
 if st.session_state.doc_summaries:
     with st.expander("📚 업로드된 문서 요약 보기", expanded=False):
         for fname, summ in st.session_state.doc_summaries.items():
             st.text_area(f"요약: {fname}", summ, height=150, key=f"summary_display_{fname}", disabled=True)
-        # 여기서 문서 요약만 지우는 버튼을 추가할 수도 있습니다.
-        # if st.button("문서 요약만 지우기", key="clear_doc_summaries_btn"):
-        #    st.session_state.doc_summaries = {}
-        #    st.session_state.processed_file_ids = set()
-        #    logging.info("Document summaries cleared by user.")
-        #    st.rerun()
+        # 필요하다면 문서 요약만 지우는 버튼을 여기에 추가할 수 있습니다.
+        if st.button("문서 요약만 지우기", key="clear_doc_summaries_btn_exp"):
+             st.session_state.doc_summaries = {}
+             st.session_state.processed_file_ids = set() # 문서 요약 관련 ID만 지우거나 별도 관리 필요 시 수정
+             logging.info("Document summaries cleared by user from expander button.")
+             st.rerun()
 
 
 # ------------------------------------------------------------------
@@ -413,7 +448,10 @@ if st.session_state.doc_summaries:
 st.markdown("---")
 st.subheader("대화")
 
-for message in st.session_state.messages:
+# 시스템 메시지는 대화 목록에 표시하지 않습니다.
+msgs_to_display = [msg for msg in st.session_state.messages if msg['role'] != 'system']
+
+for message in msgs_to_display:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
@@ -421,8 +459,11 @@ for message in st.session_state.messages:
 # CHAT INPUT & RESPONSE GENERATION (with Streaming)
 # ------------------------------------------------------------------
 if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
-    # 사용자 메시지 표시 및 기록
+    # 사용자 메시지 표시 및 기록 (session_state에 추가)
+    # 시스템 메시지를 제외한 대화 목록에 추가합니다.
     st.session_state.messages.append({'role': 'user', 'content': prompt})
+
+    # 사용자 메시지 즉시 표시
     with st.chat_message("user"):
         st.markdown(prompt)
 
@@ -430,26 +471,33 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
     try:
         tokenizer = get_tokenizer()
         current_model_max_tokens = MODEL_CONTEXT_LIMITS.get(MODEL, 4096)
+
+        # 시스템 프롬프트를 가져옵니다.
+        # st.session_state.messages의 첫 요소가 시스템 프롬프트라고 가정합니다.
+        # (SYSTEM_PROMPT 정의 및 세션 상태 업데이트 로직에 따라)
+        current_system_prompt = st.session_state.messages[0] if st.session_state.messages and st.session_state.messages[0]['role'] == 'system' else SYSTEM_PROMPT
+
         # 시스템 프롬프트 + 예약 토큰을 제외한 실제 사용 가능한 토큰
-        base_tokens = num_tokens_from_messages([SYSTEM_PROMPT], tokenizer)
+        base_tokens = num_tokens_from_messages([current_system_prompt], tokenizer)
         available_tokens_for_context = current_model_max_tokens - base_tokens - RESERVED_TOKENS
 
         if available_tokens_for_context <= 0:
              st.error("설정된 모델의 컨텍스트 길이와 예약 토큰으로 인해 대화 컨텍스트를 구성할 수 없습니다. 모델 변경 또는 예약 토큰 감소를 고려하세요.")
              logging.error("Not enough tokens for context construction after system prompt and reserved tokens.")
-             st.stop()
+             # st.stop() # 앱 전체 중지 대신 오류 메시지만 표시
+             raise ValueError("Context window too small") # 오류 발생시켜 하위 로직 중단
 
 
-        conversation_context = [SYSTEM_PROMPT]
+        # 실제 API 호출에 사용될 메시지 목록 (시스템 프롬프트 포함)
+        conversation_context = [current_system_prompt]
         tokens_used = base_tokens
 
         # 문서 요약 추가 (토큰 예산 내에서 최신순)
         doc_summary_context = []
         doc_tokens_added = 0
-        temp_context = []
         for fname, summ in reversed(list(st.session_state.doc_summaries.items())):
             summary_msg = {'role': 'system', 'content': f"[문서 '{fname}' 요약 참고]\n{summ}"}
-            temp_context = [summary_msg] # 임시로 메시지 1개 토큰 계산
+            temp_context = [summary_msg]
             summary_tokens = num_tokens_from_messages(temp_context, tokenizer)
 
             # 사용 가능한 토큰 = 전체 가용 - (현재 사용 + 추가될 요약)
@@ -467,15 +515,14 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
         # 대화 기록 추가 (토큰 예산 내에서 최신순)
         history_context = []
         history_tokens_added = 0
-        temp_context = []
-         # 사용자 입력 포함 전체 메시지 기록 사용
-        msgs_to_consider = st.session_state.messages
+        # 시스템 메시지를 제외한 대화 기록만 컨텍스트에 추가합니다.
+        msgs_to_consider = [msg for msg in st.session_state.messages if msg['role'] != 'system']
 
         for msg in reversed(msgs_to_consider):
             temp_context = [msg]
             msg_tokens = num_tokens_from_messages(temp_context, tokenizer)
 
-            # 사용 가능한 토큰 = 전체 가용 - (현재 사용(요약포함) - base + 추가될 히스토리 + 추가될 메시지)
+            # 사용 가능한 토큰 = 전체 가용 - (현재 사용(요약포함) - base + 추가될 히스토리)
             if available_tokens_for_context - ((tokens_used - base_tokens) + history_tokens_added + msg_tokens) >= 0:
                 history_context.insert(0, msg)
                 history_tokens_added += msg_tokens
@@ -494,43 +541,53 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
     except Exception as e:
         st.error(f"대화 컨텍스트 구성 중 오류 발생: {e}")
         logging.error(f"Error constructing conversation context: {e}", exc_info=True)
-        st.stop()
-
+        # st.stop() # 앱 전체 중지 대신 오류 메시지만 표시
+        conversation_context = [current_system_prompt, {'role': 'user', 'content': prompt}] # 최소한의 컨텍스트로 재시도 또는 오류 메시지 출력만
 
     # --- API 호출 및 응답 스트리밍 ---
-    with st.chat_message("assistant"):
-        message_placeholder = st.empty() # 응답 표시 영역
-        full_response = ""
-        try:
-            stream = client.chat.completions.create(
-                model=MODEL,
-                messages=conversation_context,
-                stream=True,
-                temperature=0.75 if MODE == 'Poetic' else 0.4, # 모드별 온도 조절
-                # max_tokens= # 필요시 최대 응답 길이 설정 가능
-                timeout=120 # 스트리밍 타임아웃 (초)
-            )
-            # 스트림 처리 및 표시
-            for chunk in stream:
-                if chunk.choices[0].delta.content is not None:
-                    chunk_content = chunk.choices[0].delta.content
-                    full_response += chunk_content
-                    message_placeholder.markdown(full_response + "▌") # 커서 효과
+    # 컨텍스트 구성 중 오류가 발생하지 않았거나, 오류 처리 후 최소 컨텍스트가 있는 경우 진행
+    if conversation_context and (len(conversation_context) > 1 or conversation_context[0]['role'] == 'system'):
+        with st.chat_message("assistant"):
+            message_placeholder = st.empty() # 응답 표시 영역
+            full_response = ""
+            try:
+                stream = client.chat.completions.create(
+                    model=MODEL,
+                    messages=conversation_context,
+                    stream=True,
+                    temperature=0.75 if MODE == 'Poetic' else 0.4, # 모드별 온도 조절
+                    # max_tokens= # 필요시 최대 응답 길이 설정 가능
+                    timeout=120 # 스트리밍 타임아웃 (초)
+                )
+                # 스트림 처리 및 표시
+                for chunk in stream:
+                    if chunk.choices[0].delta.content is not None:
+                        chunk_content = chunk.choices[0].delta.content
+                        full_response += chunk_content
+                        message_placeholder.markdown(full_response + "▌") # 커서 효과
 
-            message_placeholder.markdown(full_response) # 최종 응답 표시
-            logging.info(f"Assistant response received (length: {len(full_response)} chars).")
+                message_placeholder.markdown(full_response) # 최종 응답 표시
+                logging.info(f"Assistant response received (length: {len(full_response)} chars).")
 
-        except Exception as e:
-            full_response = f"⚠️ 죄송합니다, 응답 생성 중 오류가 발생했습니다: {e}"
-            message_placeholder.error(full_response)
-            logging.error(f"Error during OpenAI API call or streaming: {e}", exc_info=True)
+            except Exception as e:
+                full_response = f"⚠️ 죄송합니다, 응답 생성 중 오류가 발생했습니다: {e}"
+                message_placeholder.error(full_response)
+                logging.error(f"Error during OpenAI API call or streaming: {e}", exc_info=True)
 
-    # 응답 기록 저장
-    if full_response: # 오류 메시지 포함하여 기록
+    else:
+         full_response = "⚠️ 대화 컨텍스트 구성 실패로 응답을 생성할 수 없습니다."
+         st.chat_message("assistant").error(full_response)
+
+
+    # 응답 기록 저장 (시스템 메시지 제외)
+    if full_response and full_response.startswith("⚠️"): # API 오류 메시지도 저장
         st.session_state.messages.append({'role': 'assistant', 'content': full_response})
         save_history(HISTORY_FILE, st.session_state.messages)
+    elif full_response: # 정상 응답
+         st.session_state.messages.append({'role': 'assistant', 'content': full_response})
+         save_history(HISTORY_FILE, st.session_state.messages)
 
 
 # --- Footer or additional info ---
 st.sidebar.markdown("---")
-st.sidebar.caption("Liel Chatbot v1.1")
+st.sidebar.caption("Liel Chatbot v1.2")
