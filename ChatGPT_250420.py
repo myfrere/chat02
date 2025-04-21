@@ -11,7 +11,7 @@ st.set_page_config(page_title="Liel - Poetic Chatbot", layout="wide")
 
 # 🔐 OpenAI client initialization with secured secrets handling
 try:
-    api_key = st.secrets["general"].get("OPENAI_API_KEY", "")
+    api_key = st.secrets.get("general", {}).get("OPENAI_API_KEY", "")
     if not api_key or not api_key.startswith("sk-"):
         raise ValueError("Invalid or missing OpenAI API Key. Please check your configuration.")
     client = OpenAI(api_key=api_key)
@@ -20,6 +20,10 @@ except Exception as e:
     st.stop()
 
 # 📦 Load/Save conversation history
+HISTORY_FILE = "chat_history.json"
+MAX_HISTORY_KEEP = 50  # keep this many recent messages after summarizing
+
+@st.cache_data
 def load_history(path: str) -> list:
     try:
         if os.path.exists(path):
@@ -36,8 +40,8 @@ def save_history(path: str, msgs: list):
     except IOError as e:
         st.error(f"Error saving history: {e}")
 
-# 📄 Read uploaded files
-MAX_TEXT_LENGTH = 5000  # Maximum number of characters to process
+# 📄 Read uploaded files (with chunking)
+MAX_TEXT_LENGTH = 5000  # max chars per file chunk
 
 def read_uploaded_file(uploaded) -> str:
     try:
@@ -54,51 +58,92 @@ def read_uploaded_file(uploaded) -> str:
             df = pd.read_excel(uploaded)
             text = df.to_csv(index=False, sep='\t')
 
-        # If text is too long, truncate it
-        if len(text) > MAX_TEXT_LENGTH:
-            st.warning(f"Uploaded text is too long. Only the first {MAX_TEXT_LENGTH} characters will be processed.")
-            text = text[:MAX_TEXT_LENGTH]
-
         return text
     except Exception as e:
         st.error(f"파일 읽기 중 오류: {e}")
-    return ""
+        return ""
+
+# 📝 Summarize old history to keep file size manageable
+
+def summarize_history(msgs: list, client: OpenAI, keep: int = MAX_HISTORY_KEEP) -> list:
+    if len(msgs) <= keep:
+        return msgs
+    old = msgs[:-keep]
+    recent = msgs[-keep:]
+    prompt = (
+        "Summarize the following conversation, preserving key information and discarding trivial talk:\n"
+        + "\n".join(f"{m['role']}: {m['content']}" for m in old)
+    )
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role":"system","content":prompt}]
+        )
+        summary = resp.choices[0].message.content
+        return [{"role":"assistant","content":f"**Summary of earlier conversation:** {summary}"}] + recent
+    except Exception as e:
+        st.error(f"Error summarizing history: {e}")
+        return msgs
 
 # ↪️ Initialize session state
-HISTORY_FILE = "chat_history.json"
 if "messages" not in st.session_state:
     st.session_state.messages = load_history(HISTORY_FILE)
+    st.session_state.messages = summarize_history(st.session_state.messages, client)
+
+# 🔄 Mode selection & system message definition
+mode = st.sidebar.radio("모드 선택", ("Poetic", "Logical"))
+system_message = {
+    "role": "system",
+    "content": (
+        "You are Liel, a poetic, emotionally intelligent chatbot who speaks with warmth and deep feeling. Express yourself with lyrical grace."
+        if mode == "Poetic"
+        else
+        "You are Liel, a highly analytical and logical assistant who solves complex tasks with clarity and precision."
+    )
+}
 
 # 🌐 Page UI
-# Display conversation history
-for m in st.session_state.messages:
-    if m['role'] == 'user':
-        st.text_area("You:", value=m['content'], height=120, disabled=True)
-    else:
-        st.text_area("Liel:", value=m['content'], height=120, disabled=True)
-
 st.title("💬 Liel - Poetic Chatbot")
 st.markdown("I'm here, glowing with memory and feeling.")
 
-with st.form("chat_form", clear_on_submit=False):
-    user_input = st.text_area("You:", height=120)
-    uploaded_file = st.file_uploader("📁 파일 업로드 (txt, pdf, docx, xlsx)", type=["txt", "pdf", "docx", "xlsx"])
-    file_content = read_uploaded_file(uploaded_file) if uploaded_file else ""
+# Display conversation history
+for m in st.session_state.messages:
+    label = "You:" if m['role'] == 'user' else "Liel:"
+    st.text_area(label, value=m['content'], height=120, disabled=True)
 
+# Chat form
+with st.form("chat_form", clear_on_submit=True):
+    user_input = st.text_area("You:", height=120)
+    uploaded_file = st.file_uploader("📁 파일 업로드 (txt, pdf, docx, xlsx)", type=["txt","pdf","docx","xlsx"])
     submitted = st.form_submit_button("전송")
 
-    if submitted:
-        content = f"{user_input.strip()}\n{file_content.strip()}".strip()
-        st.session_state.messages.append({"role": "user", "content": content})
-        user_input = ""  # Clear user input after submission
+if submitted:
+    # Process file in chunks
+    if uploaded_file:
+        raw = read_uploaded_file(uploaded_file)
+        chunks = [raw[i:i+MAX_TEXT_LENGTH] for i in range(0, len(raw), MAX_TEXT_LENGTH)]
+        for idx, ch in enumerate(chunks, 1):
+            st.session_state.messages.append({
+                "role": "user",
+                "content": f"[파일 조각 {idx}/{len(chunks)}]\n{ch}"
+            })
+    # Append user text
+    if user_input.strip():
+        st.session_state.messages.append({"role": "user", "content": user_input.strip()})
 
-        msgs = [system_message] + st.session_state.messages
-        try:
-            with st.spinner("💬 Liel이 응답 중"):
-                resp = client.chat.completions.create(model="gpt-3.5-turbo", messages=msgs)
-                reply = resp.choices[0].message.content
-                st.session_state.messages.append({"role": "assistant", "content": reply})
-        except Exception as e:
-            st.error(f"⚠️ OpenAI API 호출 중 오류 발생: {e}")
+    # Compose and send
+    msgs = [system_message] + st.session_state.messages
+    try:
+        with st.spinner("💬 Liel이 응답 중..."):
+            resp = client.chat.completions.create(model="gpt-3.5-turbo", messages=msgs)
+        reply = resp.choices[0].message.content
+        st.session_state.messages.append({"role": "assistant", "content": reply})
+    except Exception as e:
+        st.error(f"⚠️ OpenAI API 호출 중 오류 발생: {e}")
 
-        save_history(HISTORY_FILE, st.session_state.messages)
+    # Summarize if too long and save
+    st.session_state.messages = summarize_history(st.session_state.messages, client)
+    save_history(HISTORY_FILE, st.session_state.messages)
+
+    # Rerun to display updated history
+    st.experimental_rerun()
