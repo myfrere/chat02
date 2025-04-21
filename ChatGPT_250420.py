@@ -9,25 +9,26 @@ import pandas as pd
 # ------------------------------------------------------------------
 #  CONFIGURATION & CONSTANTS
 # ------------------------------------------------------------------
-MAX_TOTAL_TOKENS   = 80_000   # hard safety‑cap (≈ 320 k chars)
-CHUNK_CHAR_SIZE    = 5_000    # split uploaded text into 5 k‑char chunks
-RESERVED_TOKENS    = 4_000    # 헤더·시스템프롬프트·모델 답변 등 예비치
+# GPT‑3.5‑turbo context ≈ 16 385 tokens.  We reserve ample headroom.
+MAX_TOTAL_TOKENS   = 12_000   # safe upper‑bound ~= 48 k chars
+CHUNK_CHAR_SIZE    = 2_000    # split uploaded text into 2 k‑char chunks
+RESERVED_TOKENS    = 1_000    # system / assistant headroom
 SUMMARY_PREFIX     = "**Summary:**"
-FILE_CHUNK_PREFIX  = "[File chunk]"   # marker hidden from UI / history
+FILE_CHUNK_PREFIX  = "[File chunk]"  # hidden from UI / history
 HISTORY_FILE       = "chat_history.json"
 
 # ------------------------------------------------------------------
-#  STREAMLIT PAGE CONFIG
+#  STREAMLIT PAGE SETUP
 # ------------------------------------------------------------------
-st.set_page_config(page_title="Liel – Poetic Chatbot", layout="wide")
+st.set_page_config(page_title="Liel – Poetic Chatbot", layout="wide")
 
 # ------------------------------------------------------------------
-#  OPENAI CLIENT INIT
+#  OPENAI INITIALISATION
 # ------------------------------------------------------------------
 try:
     api_key = st.secrets.get("general", {}).get("OPENAI_API_KEY", "")
     if not api_key.startswith("sk-"):
-        raise ValueError("OpenAI API key missing or invalid.")
+        raise ValueError("Missing / invalid OpenAI API key in secrets.")
     client = OpenAI(api_key=api_key)
 except Exception as e:
     st.error(f"❌ OpenAI init failed: {e}")
@@ -38,14 +39,15 @@ except Exception as e:
 # ------------------------------------------------------------------
 
 def approx_tokens(text: str) -> int:
-    """Very safe upper‑bound: 1 token ≈ 4 chars."""
+    """Coarse token estimate (4 chars ≈ 1 token)."""
     return len(text) // 4
 
-def is_file_chunk(msg: dict) -> bool:
+def is_chunk(msg: dict) -> bool:
     return msg.get("content", "").startswith(FILE_CHUNK_PREFIX)
 
 @st.cache_data
 def read_file(uploaded) -> str:
+    """Extract plain text from uploaded file types."""
     try:
         if uploaded.type == "text/plain":
             return uploaded.getvalue().decode("utf-8")
@@ -62,37 +64,37 @@ def read_file(uploaded) -> str:
 
 @st.cache_data
 def load_history(path: str) -> list:
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            msgs = json.load(f)
-        return [m for m in msgs if not is_file_chunk(m)]
-    except Exception:
-        return []
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                msgs = json.load(f)
+            return [m for m in msgs if not is_chunk(m)]
+        except Exception:
+            return []
+    return []
 
 def save_history(path: str, msgs: list):
     try:
         with open(path, "w", encoding="utf-8") as f:
-            json.dump([m for m in msgs if not is_file_chunk(m)], f, ensure_ascii=False, indent=2)
+            json.dump([m for m in msgs if not is_chunk(m)], f, ensure_ascii=False, indent=2)
     except Exception as e:
         st.error(f"History save error: {e}")
 
 # ------------------------------------------------------------------
-#  SESSION STATE INITIALISE
+#  SESSION STATE
 # ------------------------------------------------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = load_history(HISTORY_FILE)
 if "file_chunks" not in st.session_state:
-    st.session_state.file_chunks = []   # raw text chunks for model only
+    st.session_state.file_chunks = []
 if "file_ids" not in st.session_state:
     st.session_state.file_ids = set()
 
 # ------------------------------------------------------------------
-#  SYSTEM PROMPT (mode fixed to Poetic vs Logical toggle)
+#  SYSTEM PROMPT
 # ------------------------------------------------------------------
 MODE = st.sidebar.radio("Mode", ("Poetic", "Logical"))
-system_prompt = {
+SYSTEM_PROMPT = {
     "role": "system",
     "content": (
         "You are Liel, a poetic, emotionally intelligent chatbot with lyrical grace." if MODE == "Poetic" else
@@ -101,58 +103,62 @@ system_prompt = {
 }
 
 # ------------------------------------------------------------------
-#  MAIN UI
+#  UI HEADER
 # ------------------------------------------------------------------
-st.title("💬 Liel – Poetic Chatbot")
+st.title("💬 Liel – Poetic Chatbot")
 st.markdown("I'm here, glowing with memory and feeling.")
 
-# ---------------- File Upload ----------------
+# ------------------------------------------------------------------
+#  FILE UPLOAD HANDLER
+# ------------------------------------------------------------------
 up = st.file_uploader("Upload file (txt/pdf/docx/xlsx)", type=["txt", "pdf", "docx", "xlsx"])
 if up and up.name not in st.session_state.file_ids:
-    text = read_file(up)
+    txt = read_file(up)
     st.session_state.file_ids.add(up.name)
     st.session_state.messages.append({"role": "user", "content": f"📄 Uploaded: {up.name}"})
-    # split into fixed‑size chunks for later inclusion
     st.session_state.file_chunks.extend(
-        [text[i:i+CHUNK_CHAR_SIZE] for i in range(0, len(text), CHUNK_CHAR_SIZE)]
+        [txt[i:i+CHUNK_CHAR_SIZE] for i in range(0, len(txt), CHUNK_CHAR_SIZE)]
     )
 
-# ---------------- Chat Input ----------------
-if usr := st.chat_input("You:"):
-    st.session_state.messages.append({"role": "user", "content": usr})
+# ------------------------------------------------------------------
+#  CHAT INPUT & OPENAI CALL
+# ------------------------------------------------------------------
+if user_prompt := st.chat_input("You:"):
+    st.session_state.messages.append({"role": "user", "content": user_prompt})
 
-    # === Build conversation dynamically within token budget ===
-    conv = [system_prompt]
-    total_tokens = approx_tokens(system_prompt["content"]) + RESERVED_TOKENS
+    # Build conversation under context limit
+    conversation = [SYSTEM_PROMPT]
+    used_tokens = approx_tokens(SYSTEM_PROMPT["content"]) + RESERVED_TOKENS
 
-    # Add latest dialog (most recent last)
+    # Include recent chat history (newest last)
     for m in reversed(st.session_state.messages):
         t = approx_tokens(m["content"])
-        if total_tokens + t > MAX_TOTAL_TOKENS:
+        if used_tokens + t > MAX_TOTAL_TOKENS:
             break
-        conv.insert(1, m)  # Keep order: system then older → newer
-        total_tokens += t
+        conversation.insert(1, m)
+        used_tokens += t
 
-    # Append file chunks newest‑first until budget allows
+    # Include file chunks (newest first)
     for ch in reversed(st.session_state.file_chunks):
-        c_tok = approx_tokens(ch)
-        if total_tokens + c_tok > MAX_TOTAL_TOKENS:
+        t = approx_tokens(ch)
+        if used_tokens + t > MAX_TOTAL_TOKENS:
             break
-        conv.append({"role": "user", "content": f"{FILE_CHUNK_PREFIX} {ch}"})
-        total_tokens += c_tok
+        conversation.append({"role": "user", "content": f"{FILE_CHUNK_PREFIX} {ch}"})
+        used_tokens += t
 
-    # OpenAI call
-    with st.spinner("Liel is thinking…"):
+    with st.spinner("Thinking…"):
         try:
-            res = client.chat.completions.create(model="gpt-3.5-turbo", messages=conv)
+            res = client.chat.completions.create(model="gpt-3.5-turbo", messages=conversation)
             reply = res.choices[0].message.content
         except Exception as e:
-            reply = f"⚠️ API error: {e}"
+            reply = f"⚠️ API error: {e}"
 
     st.session_state.messages.append({"role": "assistant", "content": reply})
     st.chat_message("assistant").write(reply)
     save_history(HISTORY_FILE, st.session_state.messages)
 
-# ---------------- Display History (no file chunks) ----------------
+# ------------------------------------------------------------------
+#  DISPLAY HISTORY
+# ------------------------------------------------------------------
 for m in st.session_state.messages:
     st.chat_message(m['role']).write(m['content'])
