@@ -8,86 +8,17 @@ import pandas as pd
 from time import sleep
 
 # ------------------------------------------------------------------
-# CONFIGURATION & CONSTANTS
+# MODEL SELECTION
 # ------------------------------------------------------------------
-MAX_TOTAL_TOKENS = 12_000      # GPT-3.5 context cap (~16k tokens)
-CHUNK_SIZE       = 2_000       # chars per chunk for summarization
-RESERVED_TOKENS  = 1_000       # buffer for system/reply
-SUMMARY_PREFIX   = "**Summary:**"
-HISTORY_FILE     = "chat_history.json"
-
-# ------------------------------------------------------------------
-# STREAMLIT PAGE SETUP
-# ------------------------------------------------------------------
-st.set_page_config(page_title="Liel – Poetic Chatbot", layout="wide")
-
-# ------------------------------------------------------------------
-# OPENAI CLIENT INITIALIZATION
-# ------------------------------------------------------------------
-try:
-    api_key = st.secrets.get("general", {}).get("OPENAI_API_KEY", "")
-    if not api_key.startswith("sk-"):
-        raise ValueError("Invalid or missing OpenAI API key.")
-    client = OpenAI(api_key=api_key)
-except Exception as e:
-    st.error(f"❌ OpenAI init failed: {e}")
-    st.stop()
-
-# ------------------------------------------------------------------
-# HELPER FUNCTIONS
-# ------------------------------------------------------------------
-def approx_tokens(text: str) -> int:
-    """Estimate tokens: 3 chars ≈ 1 token."""
-    return max(1, len(text) // 3)
-
-@st.cache_data
-def read_file(uploaded) -> str:
-    try:
-        if uploaded.type == 'text/plain':
-            return uploaded.getvalue().decode('utf-8')
-        if uploaded.type == 'application/pdf':
-            reader = PdfFileReader(uploaded)
-            return '\n'.join(page.extract_text() or '' for page in reader.pages)
-        if 'wordprocessingml.document' in uploaded.type:
-            return '\n'.join(p.text for p in docx.Document(uploaded).paragraphs)
-        if 'spreadsheetml.sheet' in uploaded.type:
-            df = pd.read_excel(uploaded)
-            return df.to_csv(index=False, sep='\t')
-    except Exception as e:
-        st.error(f"File read error: {e}")
-    return ''
-
-@st.cache_data(show_spinner=False)
-def load_history(path: str) -> list:
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-def save_history(path: str, msgs: list):
-    try:
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(msgs, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        st.error(f"Error saving history: {e}")
-
-# ------------------------------------------------------------------
-# SESSION STATE
-# ------------------------------------------------------------------
-if 'messages' not in st.session_state:
-    st.session_state.messages = load_history(HISTORY_FILE)
-if 'doc_summaries' not in st.session_state:
-    st.session_state.doc_summaries = {}   # filename -> summary
-if 'file_ids' not in st.session_state:
-    st.session_state.file_ids = set()
-
-# ------------------------------------------------------------------
-# MODE & SYSTEM PROMPT
-# ------------------------------------------------------------------
+# Available models: gpt-3.5-turbo, gpt-4, gpt-4-32k, gpt-4o
+MODEL = st.sidebar.selectbox(
+    'Select model',
+    ('gpt-3.5-turbo', 'gpt-4', 'gpt-4-32k', 'gpt-4o')
+)
 MODE = st.sidebar.radio('Mode', ('Poetic', 'Logical'))
+)
+MODE = st.sidebar.radio('Mode', ('Poetic', 'Logical'))
+
 SYSTEM_PROMPT = {
     'role': 'system',
     'content': (
@@ -101,7 +32,7 @@ SYSTEM_PROMPT = {
 # UI HEADER
 # ------------------------------------------------------------------
 st.title('💬 Liel – Poetic Chatbot')
-st.markdown("I'm here, glowing with memory and feeling.")
+st.markdown('I\'m here, glowing with memory and feeling.')
 
 # ------------------------------------------------------------------
 # FILE UPLOAD & AUTOMATIC SUMMARIZATION
@@ -115,7 +46,7 @@ def summarize_chunks(chunks: list) -> str:
     for i, chunk in enumerate(chunks, start=1):
         try:
             response = client.chat.completions.create(
-                model='gpt-3.5-turbo',
+                model=MODEL,
                 messages=[
                     {'role': 'system',  'content': CHUNK_PROMPT},
                     {'role': 'user',    'content': chunk}
@@ -160,12 +91,12 @@ if prompt := st.chat_input('You:'):
             break
         conv.insert(1, msg)
         budget += tok
-    # hard trim oldest if still over
+    # hard trim if still over
     while sum(approx_tokens(m['content']) for m in conv) > MAX_TOTAL_TOKENS and len(conv) > 1:
         conv.pop(1)
     with st.spinner('Thinking...'):
         try:
-            response = client.chat.completions.create(model='gpt-3.5-turbo', messages=conv)
+            response = client.chat.completions.create(model=MODEL, messages=conv)
             reply = response.choices[0].message.content
         except Exception as e:
             reply = f'⚠️ API error: {e}'
