@@ -2,7 +2,7 @@ import json
 import os
 import streamlit as st
 from openai import OpenAI
-from PyPDF2 import PdfReader
+from PyPDF2 import PdfReader 
 import docx
 import pandas as pd
 
