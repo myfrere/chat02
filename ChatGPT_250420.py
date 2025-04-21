@@ -9,6 +9,7 @@ from time import sleep
 import tiktoken
 import logging
 from typing import List, Dict, Tuple, Optional, Generator
+import io # BytesIO를 사용하기 위해 추가
 
 # ------------------------------------------------------------------
 # 로깅 설정
@@ -113,26 +114,30 @@ def num_tokens_from_messages(messages: List[Dict[str, str]], encoding: tiktoken.
     return num_tokens
 
 # allow_output_mutation=True 는 파일 객체와 같은 변경 가능한 객체를 캐시할 때 필요할 수 있음
+# 이 함수는 이제 uploaded_file 객체 자체가 아닌, 바이트 내용과 메타데이터를 받습니다.
 @st.cache_data(show_spinner=False, hash_funcs={docx.document.Document: id, pd.DataFrame: pd.util.hash_pandas_object})
-def read_file(uploaded_file_content, filename, file_type) -> Tuple[str, Optional[str]]:
+def read_file(uploaded_file_content_bytes, filename, file_type) -> Tuple[str, Optional[str]]:
     """
-    업로드된 파일의 내용을 (bytes 또는 buffer) 받아 텍스트 내용을 반환합니다.
+    업로드된 파일의 내용을 (bytes) 받아 텍스트 내용을 반환합니다.
     성공 시 (내용, None), 실패 시 ('', 에러 메시지) 반환
     """
     try:
         logging.info(f"Reading file content for: {filename} (Type: {file_type})")
+        # BytesIO를 사용하여 파일류 객체처럼 다룹니다.
+        file_like_object = io.BytesIO(uploaded_file_content_bytes)
 
         if file_type == 'text/plain':
             try:
-                content = uploaded_file_content.decode('utf-8')
+                # BytesIO에서 read() 후 decode
+                content = file_like_object.read().decode('utf-8')
             except UnicodeDecodeError:
                 logging.warning(f"UTF-8 decoding failed for {filename}, trying cp949.")
-                content = uploaded_file_content.decode('cp949')
+                # read()를 다시 호출하면 스트림이 끝에 있을 수 있으므로 seek(0)으로 되돌립니다.
+                file_like_object.seek(0)
+                content = file_like_object.read().decode('cp949')
             return content, None
         elif file_type == 'application/pdf':
-            # PdfReader는 파일 경로 또는 파일류(file-like) 객체를 받습니다.
-            # uploaded_file_content가 BytesIO 객체라고 가정합니다.
-            reader = PdfReader(uploaded_file_content)
+            reader = PdfReader(file_like_object)
             text_parts = []
             for i, page in enumerate(reader.pages):
                 try:
@@ -143,13 +148,10 @@ def read_file(uploaded_file_content, filename, file_type) -> Tuple[str, Optional
                     logging.warning(f"Error extracting text from page {i+1} of {filename}: {page_err}")
             return '\n'.join(text_parts), None
         elif 'wordprocessingml.document' in file_type:
-             # python-docx도 파일 경로 또는 파일류 객체를 받습니다.
-            doc = docx.Document(uploaded_file_content)
+            doc = docx.Document(file_like_object)
             return '\n'.join(p.text for p in doc.paragraphs), None
         elif 'spreadsheetml.sheet' in file_type:
-             # pandas read_excel도 파일 경로 또는 파일류 객체를 받습니다.
-            df = pd.read_excel(uploaded_file_content, engine='openpyxl')
-            # 탭으로 구분된 CSV 형식으로 반환하여 텍스트로 사용
+            df = pd.read_excel(file_like_object, engine='openpyxl')
             return df.to_csv(index=False, sep='\t'), None
         else:
             logging.warning(f"Unsupported file type for reading: {file_type}")
@@ -169,13 +171,10 @@ def load_history(path: str) -> List[Dict[str, str]]:
         with open(path, 'r', encoding='utf-8') as f:
             history = json.load(f)
             logging.info(f"Loaded {len(history)} messages from {path}.")
-            # 세션 시작 시 시스템 프롬프트와 일치하지 않는 시스템 메시지는 제외할 수 있습니다.
-            # history = [msg for msg in history if msg['role'] != 'system'] # 이전 시스템 메시지 로드 방지 (선택 사항)
             return history
     except json.JSONDecodeError:
         logging.warning(f"History file {path} is corrupted or invalid. Backing up and starting new history.")
         try:
-            # corrupted 파일 백업 시점을 정확히 하기 위해 pd.Timestamp 대신 datetime 사용
             import datetime
             backup_path = f"{path}.{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.bak"
             os.rename(path, backup_path)
@@ -213,19 +212,22 @@ def save_history(path: str, msgs: List[Dict[str, str]]):
 if 'messages' not in st.session_state:
     # history 로드 시 시스템 메시지는 제외하고 로드
     st.session_state.messages: List[Dict[str, str]] = load_history(HISTORY_FILE)
-    # 로드된 메시지가 비어있지 않다면, 첫 번째 메시지가 시스템 메시지인 경우 스킵합니다.
-    # 하지만 load_history에서 시스템 메시지를 제외하도록 수정했으므로 이중 체크는 불필요
-    # 필요에 따라 여기에 현재 시스템 프롬프트를 첫 메시지로 추가할 수 있습니다.
-    # 예: if not st.session_state.messages or st.session_state.messages[0]['role'] != 'system':
-    #         st.session_state.messages.insert(0, SYSTEM_PROMPT)
+    # Streamlit 앱 시작 시 또는 초기화 시 현재 SYSTEM_PROMPT를 메시지 목록의 첫 요소로 추가
+    # 이렇게 해야 컨텍스트 구성 시 항상 최신 시스템 프롬프트가 포함됩니다.
+    # load_history에서 로드한 메시지가 비어있지 않아도, 첫 메시지가 현재 시스템 프롬프트가 아니면 업데이트합니다.
 
 if 'doc_summaries' not in st.session_state:
     st.session_state.doc_summaries: Dict[str, str] = {}
 if 'processed_file_ids' not in st.session_state:
     st.session_state.processed_file_ids: set = set()
+
 # 파일 처리 대기열 상태 추가
 if 'file_to_summarize' not in st.session_state:
     st.session_state.file_to_summarize: Optional[Dict] = None
+
+# 안전하게 캡처된 파일 정보 저장용 임시 변수 초기화
+if 'file_info_to_process_safely_captured' not in st.session_state:
+     st.session_state.file_info_to_process_safely_captured: Optional[Dict] = None
 
 
 # ------------------------------------------------------------------
@@ -293,6 +295,7 @@ if st.sidebar.button("🔄 대화 및 문서 요약 초기화"):
     st.session_state.doc_summaries = {}
     st.session_state.processed_file_ids = set()
     st.session_state.file_to_summarize = None # 처리 대기 파일도 초기화
+    st.session_state.file_info_to_process_safely_captured = None # 안전 캡처된 정보도 초기화
 
     # chat_history.json 파일 삭제
     if os.path.exists(HISTORY_FILE):
@@ -309,9 +312,6 @@ if st.sidebar.button("🔄 대화 및 문서 요약 초기화"):
 # ------------------------------------------------------------------
 # SYSTEM PROMPT DEFINITION
 # ------------------------------------------------------------------
-# SYSTEM_PROMPT 정의는 세션 시작 시 한번만 하거나, 모드가 바뀔 때 업데이트해야 합니다.
-# Streamlit은 매 실행마다 전체 스크립트를 돌므로 SYSTEM_PROMPT 정의 자체는 계속 일어나지만,
-# 이를 메시지 목록에 추가하는 로직은 신중해야 합니다.
 SYSTEM_PROMPT_CONTENT = (
     'You are Liel, a poetic, emotionally intelligent chatbot with lyrical grace. Respond with warmth, creativity, and empathy. Use rich language and metaphors when appropriate.'
     if MODE == 'Poetic' else
@@ -319,15 +319,16 @@ SYSTEM_PROMPT_CONTENT = (
 )
 SYSTEM_PROMPT = {'role': 'system', 'content': SYSTEM_PROMPT_CONTENT}
 
-# 세션이 시작될 때 (messages가 초기화될 때) 또는 모드가 변경될 때 시스템 프롬프트 추가
+# 세션이 시작될 때 (messages가 초기화될 때) 또는 모드가 바뀔 때 시스템 프롬프트 추가
 # 매번 스크립트 실행 시 메시지 목록의 첫 요소가 시스템 프롬프트인지 확인하고,
 # 다르거나 없으면 업데이트/추가합니다.
-if not st.session_state.messages or st.session_state.messages[0]['role'] != 'system' or st.session_state.messages[0]['content'] != SYSTEM_PROMPT_CONTENT:
-     # 기존 시스템 메시지 제거
-     st.session_state.messages = [msg for msg in st.session_state.messages if msg['role'] != 'system']
-     # 새 시스템 메시지 추가
-     st.session_state.messages.insert(0, SYSTEM_PROMPT)
-     # 시스템 메시지 변경 시 history.json에 저장되지 않도록 save_history 함수에서 제외 처리 필요 (이미 구현됨)
+if 'messages' in st.session_state: # messages 상태가 존재하는지 확인 (초기화 전에는 없을 수 있음)
+     if not st.session_state.messages or st.session_state.messages[0]['role'] != 'system' or st.session_state.messages[0]['content'] != SYSTEM_PROMPT_CONTENT:
+         # 기존 시스템 메시지 제거
+         st.session_state.messages = [msg for msg in st.session_state.messages if msg['role'] != 'system']
+         # 새 시스템 메시지 추가
+         st.session_state.messages.insert(0, SYSTEM_PROMPT)
+         # 시스템 메시지 변경 시 history.json에 저장되지 않도록 save_history 함수에서 제외 처리 필요 (이미 구현됨)
 
 
 # ------------------------------------------------------------------
@@ -350,82 +351,134 @@ uploaded_file = st.file_uploader(
     help="텍스트, PDF, 워드, 엑셀 파일을 업로드하면 내용을 요약하여 대화 컨텍스트에 포함합니다."
 )
 
-# --- 파일 업로드 처리 로직 (세션 상태 사용) ---
-# 파일 업로더 위젯에 새로운 파일 객체가 있는지 확인
+# --- File Upload Handling and Queuing ---
+# This block runs on every rerun.
+# Check if a new file object is presented by the uploader widget.
+# We need to be careful if uploaded_file becomes None on subsequent reruns.
+# Safely attempt to get the file details and queue it for processing.
+file_info_from_uploader = None
+# uploaded_file is None check BEFORE try block
 if uploaded_file is not None:
-    # 파일 객체의 고유 ID 사용 또는 다른 방법으로 파일 식별 (예: 이름, 크기 조합)
-    # st.rerun() 등으로 인해 uploaded_file 객체 자체가 None이 될 수 있으므로 ID를 먼저 확보
-    current_uploaded_file_id = uploaded_file.id # Streamlit 1.29.0 이상에서 지원
+    try:
+        # Safely attempt to get the file's unique ID.
+        # If uploaded_file is None or doesn't have .id, this will raise AttributeError.
+        # We capture essential info (ID, name, type, content bytes) right here.
+        file_id_now = uploaded_file.id # This is the line that causes error sometimes
+        file_name_now = uploaded_file.name
+        file_type_now = uploaded_file.type
+        file_bytes_now = uploaded_file.getvalue() # Get the bytes content immediately
 
-    # 이전에 처리했거나 현재 처리 대기 중인 파일인지 확인
-    # file_to_summarize 상태를 먼저 확인하여 중복 처리 방지
-    if 'file_to_summarize' not in st.session_state or \
-       st.session_state.file_to_summarize is None or \
-       st.session_state.file_to_summarize['id'] != current_uploaded_file_id: # 현재 파일과 다른 경우 새로 처리
+        # If we successfully got the ID and bytes without error:
+        # Store info temporarily in session state for the next processing block.
+        # Only store if it's a new file not already processed, in main queue, or already captured.
+        is_already_processed = file_id_now in st.session_state.processed_file_ids
+        is_already_in_main_queue = ('file_to_summarize' in st.session_state and \
+                               st.session_state.file_to_summarize is not None and \
+                               st.session_state.file_to_summarize['id'] == file_id_now)
+        is_already_safely_captured = ('file_info_to_process_safely_captured' in st.session_state and \
+                                      st.session_state.file_info_to_process_safely_captured is not None and \
+                                      st.session_state.file_info_to_process_safely_captured['id'] == file_id_now)
 
-         if current_uploaded_file_id not in st.session_state.processed_file_ids:
-            logging.info(f"New file detected: {uploaded_file.name} (ID: {current_uploaded_file_id})")
-            # 파일 내용을 읽어서 세션 상태에 저장하고, 처리는 다음 Streamlit 실행 주기에 진행
-            # uploaded_file.getvalue()는 파일 객체 자체 또는 그 내용을 반환
-            file_content_bytes = uploaded_file.getvalue()
-            filename_to_process = uploaded_file.name
-            filetype_to_process = uploaded_file.type
-
-            # 파일 내용을 읽고 에러가 없으면 처리 대기 상태로 저장
-            # read_file 함수는 파일류 객체를 받도록 수정되었습니다.
-            import io
-            content_text, read_error = read_file(io.BytesIO(file_content_bytes), filename_to_process, filetype_to_process)
-
-
-            if read_error:
-                st.error(f"'{filename_to_process}' 파일 읽기 실패: {read_error}")
-                # 실패한 파일도 processed_file_ids에 추가하여 다시 시도하지 않도록 할 수 있습니다 (선택 사항)
-                # st.session_state.processed_file_ids.add(current_uploaded_file_id)
-            elif not content_text:
-                st.warning(f"'{filename_to_process}' 파일 내용이 비어 있습니다. 요약을 건너뜍니다.")
-                st.session_state.processed_file_ids.add(current_uploaded_file_id) # 빈 파일도 처리 완료로 표시
-            else:
-                # 처리할 파일 정보를 세션 상태에 저장
-                st.session_state.file_to_summarize = {
-                    'id': current_uploaded_file_id,
-                    'name': filename_to_process,
-                    'content': content_text # 텍스트 내용을 저장
-                }
-                logging.info(f"File '{filename_to_process}' stored in session state for processing.")
-                # 파일 업로드 감지 후 바로 Rerun을 호출하여 파일 처리 로직이 시작되도록 합니다.
-                st.rerun() # Streamlit 재실행 (파일 처리 로직으로 이동)
+        if not is_already_processed and not is_already_in_main_queue and not is_already_safely_captured:
+             logging.info(f"Detected new file and attempting to safely capture details: {file_name_now} (ID: {file_id_now})")
+             # Store the safely captured info (ID, name, type, bytes) into session state
+             st.session_state.file_info_to_process_safely_captured = {
+                 'id': file_id_now,
+                 'name': file_name_now,
+                 'type': file_type_now,
+                 'bytes': file_bytes_now # Store bytes
+             }
+             # Trigger rerun to move to the next processing block
+             st.rerun()
+        # If it IS already safely captured, clear the temporary capture state to avoid infinite reruns on this block
+        elif is_already_safely_captured:
+             st.session_state.file_info_to_process_safely_captured = None
+             # No rerun needed here, the next block or chat input will trigger it
 
 
-# --- 파일 처리 및 요약 로직 (세션 상태에서 파일 정보를 읽어옴) ---
-# 세션 상태에 처리 대기 중인 파일이 있고, 아직 처리되지 않은 경우
+    except AttributeError as e:
+        # This block is hit if uploaded_file is None or invalid when accessing .id, .name, .type, or .getvalue()
+        # This is the error you are seeing repeatedly.
+        logging.warning(f"AttributeError caught during uploaded_file attribute access (expected in some rerun states): {e}")
+        # Do NOT set file_info_from_uploader or file_to_summarize here.
+        # The object was not valid this rerun. The processing block will handle
+        # whatever valid state was captured on a previous, successful rerun.
+        # No need to raise or set error state, just skip processing for THIS invalid object state.
+        pass # Simply skip capturing/queuing for this rerun if the object is bad
+    except Exception as e:
+         # Catch any other unexpected errors during initial access
+         logging.error(f"Unexpected error during uploaded_file attribute access: {e}", exc_info=True)
+         pass # Skip for this rerun
+
+
+# --- Processing Queue Handling: Bytes to Text Conversion ---
+# This block checks if there is safely captured file info (bytes) that needs to be
+# converted to text and added to the main summarization queue (file_to_summarize).
+if 'file_info_to_process_safely_captured' in st.session_state and \
+   st.session_state.file_info_to_process_safely_captured is not None:
+
+    file_info_captured = st.session_state.file_info_to_process_safely_captured
+
+    # Check if this file ID is NOT already marked as processed
+    if file_info_captured['id'] not in st.session_state.processed_file_ids:
+
+        logging.info(f"Processing safely captured file info (bytes to text) for '{file_info_captured['name']}' (ID: {file_info_captured['id']}).")
+
+        # Clear the safely captured state BEFORE processing it
+        st.session_state.file_info_to_process_safely_captured = None
+
+        # Read the file content from bytes to text using the helper function
+        # read_file expects bytes content, filename, type
+        content_text, read_error = read_file(file_info_captured['bytes'], file_info_captured['name'], file_info_captured['type'])
+
+        if read_error:
+            st.error(f"'{file_info_captured['name']}' 파일 읽기 실패: {read_error}")
+            # Optionally add to processed_file_ids or failed list
+            st.session_state.processed_file_ids.add(file_info_captured['id']) # Mark as processed (failed read)
+        elif not content_text:
+            st.warning(f"'{file_info_captured['name']}' 파일 내용이 비어 있습니다. 요약을 건너뜁니다.")
+            st.session_state.processed_file_ids.add(file_info_captured['id']) # Mark as processed (empty)
+        else:
+            # Add the text content to the main summarization queue
+            st.session_state.file_to_summarize = {
+                'id': file_info_captured['id'],
+                'name': file_info_captured['name'],
+                'content': content_text # Store text content
+            }
+            logging.info(f"File '{file_info_captured['name']}' text content queued for summarization.")
+            st.rerun() # Trigger rerun to start summarization process
+
+
+# --- Main Summarization Processing ---
+# This block processes the file from the main queue (file_to_summarize - contains text content)
 if 'file_to_summarize' in st.session_state and \
    st.session_state.file_to_summarize is not None and \
-   st.session_state.file_to_summarize['id'] not in st.session_state.processed_file_ids:
+   st.session_state.file_to_summarize['id'] not in st.session_state.processed_file_ids: # Check if it's not already marked as processed
 
-    file_info = st.session_state.file_to_summarize
-    file_id_to_process = file_info['id']
-    filename_to_process = file_info['name']
-    file_content_to_process = file_info['content']
+    file_info_to_process = st.session_state.file_to_summarize
+    file_id_to_process = file_info_to_process['id']
+    filename_to_process = file_info_to_process['name']
+    file_content_to_process = file_info_to_process['content'] # This is text
 
-    # 처리 대기열에서 파일 정보 제거
+    # Clear the queue slot BEFORE processing starts
     st.session_state.file_to_summarize = None
 
-    logging.info(f"Starting processing file from session state: {filename_to_process} (ID: {file_id_to_process})")
+    logging.info(f"Starting summarization processing from queue: {filename_to_process} (ID: {file_id_to_process})")
 
     with st.spinner(f"'{filename_to_process}' 처리 및 요약 중..."):
         tokenizer = get_tokenizer()
-        # summarize_document 함수는 텍스트 내용을 바로 받도록 되어 있습니다.
-        summary, summary_error = summarize_document(file_content_to_process, filename_to_process, MODEL, tokenizer) # summarize_document contains API calls and progress bar
+        # summarize_document takes text content
+        summary, summary_error = summarize_document(file_content_to_process, filename_to_process, MODEL, tokenizer)
 
         if summary_error:
              st.warning(f"'{filename_to_process}' 요약 중 일부 오류 발생:\n{summary_error}")
 
         st.session_state.doc_summaries[filename_to_process] = summary
-        st.session_state.processed_file_ids.add(file_id_to_process) # 처리 완료 ID 추가
+        st.session_state.processed_file_ids.add(file_id_to_process) # Mark as fully processed
 
     st.success(f"📄 '{filename_to_process}' 업로드 및 요약 완료!")
     logging.info(f"Successfully processed and summarized file: {filename_to_process}")
-    # 요약 완료 후 Rerun을 호출하여 UI (예: 요약 Expander)를 업데이트합니다.
+    # Rerun after processing is complete to update UI (expander, button visibility)
     st.rerun()
 
 
@@ -437,7 +490,13 @@ if st.session_state.doc_summaries:
         # 필요하다면 문서 요약만 지우는 버튼을 여기에 추가할 수 있습니다.
         if st.button("문서 요약만 지우기", key="clear_doc_summaries_btn_exp"):
              st.session_state.doc_summaries = {}
-             st.session_state.processed_file_ids = set() # 문서 요약 관련 ID만 지우거나 별도 관리 필요 시 수정
+             # processed_file_ids는 문서 요약뿐 아니라 파일 읽기 성공 여부 등 전체 처리 완료 상태를
+             # 추적하는 데 사용되므로, 문서 요약만 지울 때는 processed_file_ids를 그대로 두거나
+             # 문서 요약 관련 ID만 별도로 관리하는 로직이 필요할 수 있습니다. 여기서는 모두 지우는 것으로 둡니다.
+             st.session_state.processed_file_ids = set()
+             # 세션 상태의 파일 처리 관련 임시 변수도 초기화
+             st.session_state.file_to_summarize = None
+             st.session_state.file_info_to_process_safely_captured = None
              logging.info("Document summaries cleared by user from expander button.")
              st.rerun()
 
@@ -542,11 +601,12 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
         st.error(f"대화 컨텍스트 구성 중 오류 발생: {e}")
         logging.error(f"Error constructing conversation context: {e}", exc_info=True)
         # st.stop() # 앱 전체 중지 대신 오류 메시지만 표시
-        conversation_context = [current_system_prompt, {'role': 'user', 'content': prompt}] # 최소한의 컨텍스트로 재시도 또는 오류 메시지 출력만
+        # 오류 발생 시 최소한의 컨텍스트만 포함하여 API 호출을 시도하거나 오류 메시지만 출력
+        conversation_context = [current_system_prompt, {'role': 'user', 'content': prompt}] # 사용자 프롬프트는 항상 포함
 
     # --- API 호출 및 응답 스트리밍 ---
     # 컨텍스트 구성 중 오류가 발생하지 않았거나, 오류 처리 후 최소 컨텍스트가 있는 경우 진행
-    if conversation_context and (len(conversation_context) > 1 or conversation_context[0]['role'] == 'system'):
+    if conversation_context and any(msg['role'] != 'system' for msg in conversation_context): # 시스템 메시지만 있는 경우 제외
         with st.chat_message("assistant"):
             message_placeholder = st.empty() # 응답 표시 영역
             full_response = ""
@@ -575,19 +635,19 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
                 logging.error(f"Error during OpenAI API call or streaming: {e}", exc_info=True)
 
     else:
-         full_response = "⚠️ 대화 컨텍스트 구성 실패로 응답을 생성할 수 없습니다."
+         full_response = "⚠️ 대화 컨텍스트 구성 실패로 응답을 생성할 수 없습니다. 오류 로그를 확인하세요."
          st.chat_message("assistant").error(full_response)
 
 
     # 응답 기록 저장 (시스템 메시지 제외)
-    if full_response and full_response.startswith("⚠️"): # API 오류 메시지도 저장
-        st.session_state.messages.append({'role': 'assistant', 'content': full_response})
-        save_history(HISTORY_FILE, st.session_state.messages)
-    elif full_response: # 정상 응답
+    if full_response and not full_response.startswith("⚠️"): # 정상 응답만 저장 (API 오류 메시지 제외)
          st.session_state.messages.append({'role': 'assistant', 'content': full_response})
          save_history(HISTORY_FILE, st.session_state.messages)
+    elif full_response.startswith("⚠️"): # 오류 메시지도 대화 목록에는 포함시키지만 파일에는 저장 안 함
+         st.session_state.messages.append({'role': 'assistant', 'content': full_response})
+         #save_history(HISTORY_FILE, st.session_state.messages) # 오류 메시지는 파일에 저장하지 않음
 
 
 # --- Footer or additional info ---
 st.sidebar.markdown("---")
-st.sidebar.caption("Liel Chatbot v1.2")
+st.sidebar.caption("Liel Chatbot v1.3") # 버전 업데이트
