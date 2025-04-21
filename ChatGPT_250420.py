@@ -35,7 +35,8 @@ except Exception as e:
 # ------------------------------------------------------------------
 
 def approx_tokens(txt: str) -> int:
-    return max(1, len(txt) // 3)  # 3 chars ≈ 1 token upper‑bound
+    """3 chars ≈ 1 token upper‑bound."""
+    return max(1, len(txt) // 3)
 
 @st.cache_data
 def read_file(file) -> str:
@@ -83,9 +84,8 @@ MODE = st.sidebar.radio("Mode", ("Poetic", "Logical"))
 SYSTEM_PROMPT = {
     "role": "system",
     "content": (
-        "You are Liel, a poetic, emotionally intelligent chatbot with lyrical grace."
-        if MODE == "Poetic"
-        else "You are Liel, a highly analytical assistant with clarity and precision."
+        "You are Liel, a poetic, emotionally intelligent chatbot with lyrical grace." if MODE == "Poetic" else
+        "You are Liel, a highly analytical assistant with clarity and precision."
     ),
 }
 
@@ -98,7 +98,7 @@ st.markdown("I'm here, glowing with memory and feeling.")
 # ------------------------------------------------------------------
 # UPLOAD & AUTO‑SUMMARIZE
 # ------------------------------------------------------------------
-CHUNK_PROMPT = "Summarize this chunk in 2‒3 short Korean bullet points."  # adjust for language
+CHUNK_PROMPT = "Summarize this chunk in 2‑3 short Korean bullet points."
 
 def summarize_chunks(chunks):
     summaries = []
@@ -115,13 +115,13 @@ def summarize_chunks(chunks):
             )
             summaries.append(res.choices[0].message.content.strip())
         except Exception as e:
-            summaries.append("(요약 실패)" + str(e))
+            summaries.append("(요약 실패) " + str(e))
         prog.progress(min(1.0, i * step))
         sleep(0.1)
     prog.empty()
     return "\n".join(summaries)
 
-uploaded = st.file_uploader("Upload file (txt/pdf/docx/xlsx)", type=["txt","pdf","docx","xlsx"])
+uploaded = st.file_uploader("Upload file (txt/pdf/docx/xlsx)", type=["txt", "pdf", "docx", "xlsx"])
 if uploaded and uploaded.name not in st.session_state.file_ids:
     full_text = read_file(uploaded)
     chunks = [full_text[i:i+CHUNK_CHAR_SIZE] for i in range(0, len(full_text), CHUNK_CHAR_SIZE)]
@@ -136,7 +136,7 @@ if uploaded and uploaded.name not in st.session_state.file_ids:
 if user_prompt := st.chat_input("You:"):
     st.session_state.messages.append({"role": "user", "content": user_prompt})
 
-    # Build conversation under token budget
+    # Build conversation within token budget
     conv = [SYSTEM_PROMPT]
     budget = approx_tokens(SYSTEM_PROMPT["content"]) + RESERVED_TOKENS
 
@@ -145,8 +145,7 @@ if user_prompt := st.chat_input("You:"):
         tok = approx_tokens(summ)
         if budget + tok > MAX_TOTAL_TOKENS:
             continue
-        conv.append({"role": "system", "content": f"[Doc {name} summary]
-{summ}"})
+        conv.append({"role": "system", "content": f"[Doc {name} summary]\n{summ}"})
         budget += tok
 
     # 2) include recent chat (newest last)
@@ -157,12 +156,11 @@ if user_prompt := st.chat_input("You:"):
         conv.insert(1, msg)
         budget += tok
 
-    # 3) final hard‑trim if still over limit
+    # 3) hard‑trim if still over cap
     while sum(approx_tokens(m["content"]) for m in conv) > MAX_TOTAL_TOKENS and len(conv) > 1:
-        # drop the second element (oldest non‑system message)
-        conv.pop(1)
+        conv.pop(1)  # drop oldest non‑system
 
-    with st.spinner("Thinking…"):​("Thinking…"):
+    with st.spinner("Thinking…"):
         try:
             res = client.chat.completions.create(model="gpt-3.5-turbo", messages=conv)
             answer = res.choices[0].message.content
@@ -174,7 +172,7 @@ if user_prompt := st.chat_input("You:"):
     save_history(HISTORY_FILE, st.session_state.messages)
 
 # ------------------------------------------------------------------
-# DISPLAY
+# DISPLAY HISTORY
 # ------------------------------------------------------------------
 for m in st.session_state.messages:
     st.chat_message(m['role']).write(m['content'])
