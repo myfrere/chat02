@@ -63,8 +63,10 @@ def summarize_history(msgs: list) -> list:
     if len(msgs) <= MAX_HISTORY_KEEP:
         return msgs
     old, recent = msgs[:-MAX_HISTORY_KEEP], msgs[-MAX_HISTORY_KEEP:]
-    prompt = ("Summarize conversation preserving key points and discarding trivial talk:\n" +
-              "\n".join(f"{m['role']}: {m['content']}" for m in old))
+    prompt = (
+        "Summarize conversation preserving key points and discarding trivial talk:\n" +
+        "\n".join(f"{m['role']}: {m['content']}" for m in old)
+    )
     try:
         resp = client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -81,7 +83,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = summarize_history(st.session_state.messages)
 
 # 🔄 Mode & system message
-mode = st.sidebar.radio("모드 선택", ("Poetic", "Logical"))
+mode = st.sidebar.radio("Mode", ("Poetic", "Logical"))
 system_message = {
     "role": "system",
     "content": (
@@ -96,10 +98,10 @@ system_message = {
 st.title("💬 Liel - Poetic Chatbot")
 st.markdown("I'm here, glowing with memory and feeling.")
 
-# Display chat history without key collisions
+# Display chat history
 for msg in st.session_state.messages:
-    role = "user" if msg['role'] == 'user' else "assistant"
-    st.chat_message(role).write(msg['content'])
+    role_str = "user" if msg['role'] == 'user' else "assistant"
+    st.chat_message(role_str).write(msg['content'])
 
 # Chat input form
 with st.form("chat_form", clear_on_submit=True):
@@ -108,29 +110,31 @@ with st.form("chat_form", clear_on_submit=True):
     submitted = st.form_submit_button("Send")
 
 if submitted:
-    # handle file
+    # Process file
     if uploaded_file:
-        raw = read_uploaded_file(uploaded_file)
-        chunks = [raw[i:i+MAX_TEXT_LENGTH] for i in range(0, len(raw), MAX_TEXT_LENGTH)]
-        for i, chunk in enumerate(chunks, 1):
-            st.session_state.messages.append({"role": "user", "content": f"[File part {i}/{len(chunks)}]\n{chunk}"})
-    # handle user text
+        raw_text = read_uploaded_file(uploaded_file)
+        chunks = [raw_text[i:i+MAX_TEXT_LENGTH] for i in range(0, len(raw_text), MAX_TEXT_LENGTH)]
+        for idx, chunk in enumerate(chunks, 1):
+            st.session_state.messages.append({
+                "role": "user",
+                "content": f"[File part {idx}/{len(chunks)}]\n{chunk}"
+            })
+    # Process user input
     if user_input:
         st.session_state.messages.append({"role": "user", "content": user_input})
 
-    # call OpenAI
-    conv = [system_message] + st.session_state.messages
+    # Call OpenAI
+    conversation = [system_message] + st.session_state.messages
     try:
         with st.spinner("Liel is thinking..."):
-            res = client.chat.completions.create(model="gpt-3.5-turbo", messages=conv)
-        reply = res.choices[0].message.content
-        st.session_state.messages.append({"role": "assistant", "content": reply})
+            response = client.chat.completions.create(model="gpt-3.5-turbo", messages=conversation)
+        assistant_reply = response.choices[0].message.content
+        st.session_state.messages.append({"role": "assistant", "content": assistant_reply})
+        # Immediately display the assistant's reply
+        st.chat_message("assistant").write(assistant_reply)
     except Exception as e:
         st.error(f"API error: {e}")
 
-    # summarize & save
+    # Summarize & save history
     st.session_state.messages = summarize_history(st.session_state.messages)
     save_history(HISTORY_FILE, st.session_state.messages)
-
-    # rerun via state change
-    st.experimental_rerun()
