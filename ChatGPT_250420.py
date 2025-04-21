@@ -149,9 +149,9 @@ def read_file(uploaded_file_content_bytes, filename, file_type) -> Tuple[str, Op
         return '', f"파일 처리 중 오류 발생: {e}"
 
 
-# summarize_document remains the same
+# summarize_document: tokenizer parameter is now _tokenizer for caching
 @st.cache_data(show_spinner=False)
-def summarize_document(text: str, filename: str, model: str, tokenizer: tiktoken.Encoding) -> Tuple[str, Optional[str]]:
+def summarize_document(text: str, filename: str, model: str, _tokenizer: tiktoken.Encoding) -> Tuple[str, Optional[str]]:
     """주어진 텍스트를 청크로 나누어 모델로 요약."""
     if not text:
         return "(문서 내용 없음)", None
@@ -168,7 +168,8 @@ def summarize_document(text: str, filename: str, model: str, tokenizer: tiktoken
         progress = (i + 1) / total_chunks
         progress_bar.progress(progress, text=f"'{filename}' 요약 중... [{i+1}/{total_chunks}]")
 
-        chunk_tokens = num_tokens_from_string(chunk, tokenizer)
+        # Use _tokenizer here
+        chunk_tokens = num_tokens_from_string(chunk, _tokenizer)
         model_limit = MODEL_CONTEXT_LIMITS.get(model, 8192)
         if chunk_tokens > model_limit - 500:
              logging.warning(f"Chunk {i+1} tokens ({chunk_tokens}) near/exceeds model limit ({model}).")
@@ -282,7 +283,7 @@ if 'uploaded_image_for_next_prompt' not in st.session_state:
 # ------------------------------------------------------------------
 st.sidebar.title("⚙️ 설정")
 
-# gpt-4o-mini 모델 추가
+# gpt-4o-mini 모델 포함
 MODEL = st.sidebar.selectbox(
     '모델 선택 (멀티모달 지원)',
     MULTIMODAL_VISION_MODELS,
@@ -508,6 +509,7 @@ if st.session_state.get('file_to_summarize', None) is not None and st.session_st
 
     with st.spinner(f"'{filename_to_process}' 처리 및 요약 중..."):
         tokenizer = get_tokenizer();
+        # 매개변수 이름 'tokenizer'를 '_tokenizer'로 변경하여 캐싱 오류 해결
         summary, summary_error = summarize_document(file_content_to_process, filename_to_process, MODEL, tokenizer)
 
         if summary_error:
@@ -531,7 +533,7 @@ if st.session_state.doc_summaries:
         for fname in sorted(st.session_state.doc_summaries.keys()):
              summ = st.session_state.doc_summaries[fname]
              st.text_area(f"요약: {fname}", summ, height=150, key=f"summary_display_{fname}", disabled=True)
-        # Keep the Clear Summaries button here if needed, or remove entirely
+        # Clear Summaries button (Optional - uncomment if needed)
         # if st.button("문서 요약만 지우기", key="clear_doc_summaries_btn_exp"):
         #      st.session_state.messages = [msg for msg in st.session_state.messages if msg['role'] == 'system']
         #      st.session_state.doc_summaries = {}
@@ -566,7 +568,7 @@ for message in msgs_to_display:
                           header, base64_data = image_url.split(',')
                           image_bytes = base64.b64decode(base64_data)
                           image_type = header.split(':')[1].split(';')[0] if ':' in header and ';' in header else 'image/png'
-                          st.image(image_bytes, use_container_width=True)
+                          st.image(image_bytes, use_container_width=True) # use_container_width 적용
                       except Exception as e:
                            logging.error(f"Error displaying image from multimodal message in history: {e}", exc_info=True)
                            st.warning("⚠️ 이미지 표시 중 오류가 발생했습니다.")
@@ -619,7 +621,7 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
                           header, base64_data = image_url.split(',')
                           image_bytes = base64.b64decode(base64_data)
                           image_type = header.split(':')[1].split(';')[0] if ':' in header and ';' in header else 'image/png'
-                          st.image(image_bytes, use_container_width=True)
+                          st.image(image_bytes, use_container_width=True) # use_container_width 적용
                       except Exception as e:
                            logging.error(f"Error displaying image from multimodal message in chat area: {e}", exc_info=True)
                            st.warning("⚠️ 이미지 표시 중 오류가 발생했습니다.")
@@ -743,4 +745,4 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
 
 # --- Footer or additional info ---
 st.sidebar.markdown("---")
-st.sidebar.caption("Liel Chatbot v1.7.8 (gpt-4o-mini 추가 및 버튼 삭제)") # 버전 및 상태 업데이트
+st.sidebar.caption("Liel Chatbot v1.7.9 (텍스트 파일 캐싱 오류 수정)") # 버전 및 상태 업데이트
