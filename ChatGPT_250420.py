@@ -57,7 +57,6 @@ def read_uploaded_file(uploaded) -> str:
         elif "spreadsheetml.sheet" in uploaded.type:
             df = pd.read_excel(uploaded)
             text = df.to_csv(index=False, sep='\t')
-
         return text
     except Exception as e:
         st.error(f"파일 읽기 중 오류: {e}")
@@ -145,5 +144,4 @@ if submitted:
     st.session_state.messages = summarize_history(st.session_state.messages, client)
     save_history(HISTORY_FILE, st.session_state.messages)
 
-    # Rerun to display updated history
-    st.experimental_rerun()
+    # No explicit rerun needed: Streamlit will rerun automatically on state change
