@@ -140,15 +140,16 @@ if user_prompt := st.chat_input("You:"):
     conv = [SYSTEM_PROMPT]
     budget = approx_tokens(SYSTEM_PROMPT["content"]) + RESERVED_TOKENS
 
-    # include doc summaries (newest first)
+    # 1) include doc summaries (newest first)
     for name, summ in list(st.session_state.doc_summaries.items())[::-1]:
         tok = approx_tokens(summ)
         if budget + tok > MAX_TOTAL_TOKENS:
             continue
-        conv.append({"role": "system", "content": f"[Document {name} summary]\n{summ}"})
+        conv.append({"role": "system", "content": f"[Doc {name} summary]
+{summ}"})
         budget += tok
 
-    # include recent chat
+    # 2) include recent chat (newest last)
     for msg in reversed(st.session_state.messages):
         tok = approx_tokens(msg["content"])
         if budget + tok > MAX_TOTAL_TOKENS:
@@ -156,7 +157,12 @@ if user_prompt := st.chat_input("You:"):
         conv.insert(1, msg)
         budget += tok
 
-    with st.spinner("Thinking…"):
+    # 3) final hard‑trim if still over limit
+    while sum(approx_tokens(m["content"]) for m in conv) > MAX_TOTAL_TOKENS and len(conv) > 1:
+        # drop the second element (oldest non‑system message)
+        conv.pop(1)
+
+    with st.spinner("Thinking…"):​("Thinking…"):
         try:
             res = client.chat.completions.create(model="gpt-3.5-turbo", messages=conv)
             answer = res.choices[0].message.content
