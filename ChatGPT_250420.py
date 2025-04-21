@@ -2,44 +2,72 @@ import json
 import os
 import streamlit as st
 from openai import OpenAI
-from PyPDF2 import PdfReader 
+from PyPDF2 import PdfReader
 import docx
 import pandas as pd
 
-# 🍃 Streamlit page configuration
+# === Constants & Defaults ===
+DEFAULT_HISTORY_KEEP = 50
+DEFAULT_TEXT_CHUNK_SIZE = 5000
+FILE_CHUNK_PREFIX = "[File chunk]"
+SUMMARY_PREFIX = "**Summary:**"
+HISTORY_FILE = "chat_history.json"
+
+# === Streamlit page config ===
 st.set_page_config(page_title="Liel - Poetic Chatbot", layout="wide")
 
-# 🔐 OpenAI client initialization
+# === Sidebar Controls ===
+st.sidebar.title("⚙️ Settings")
+history_keep = st.sidebar.slider(
+    "Max messages to keep before summarizing", 10, 200, DEFAULT_HISTORY_KEEP, 10
+)
+text_chunk_size = st.sidebar.slider(
+    "Max characters per file chunk", 1000, 20000, DEFAULT_TEXT_CHUNK_SIZE, 500
+)
+mode = st.sidebar.radio("Mode", ("Poetic", "Logical"))
+
+# === OpenAI Client Initialization ===
 try:
     api_key = st.secrets.get("general", {}).get("OPENAI_API_KEY", "")
-    if not api_key or not api_key.startswith("sk-"):
-        raise ValueError("Invalid or missing OpenAI API Key.")
+    if not api_key.startswith("sk-"):
+        raise ValueError("Invalid or missing OpenAI API key.")
     client = OpenAI(api_key=api_key)
 except Exception as e:
-    st.error(f"Failed to initialize OpenAI: {e}")
+    st.error(f"OpenAI init failed: {e}")
     st.stop()
 
-# 📦 Conversation history file
-HISTORY_FILE = "chat_history.json"
-MAX_HISTORY_KEEP = 50
+# === Helper Functions ===
+def is_file_chunk_message(msg: dict) -> bool:
+    """Return True if message is a file chunk marker."""
+    content = msg.get("content", "")
+    return content.startswith(FILE_CHUNK_PREFIX)
 
 @st.cache_data
 def load_history(path: str) -> list:
+    """Load saved history, filtering out chunk markers."""
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except json.JSONDecodeError:
+                msgs = json.load(f)
+            # filter out chunk markers
+            return [m for m in msgs if not is_file_chunk_message(m)]
+        except Exception:
             return []
     return []
 
-def save_history(path: str, msgs: list):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(msgs, f, ensure_ascii=False, indent=2)
 
-# 📄 File‐reading with chunking
-MAX_TEXT_LENGTH = 5000
+def save_history(path: str, msgs: list):
+    """Save history excluding chunk markers."""
+    try:
+        filtered = [m for m in msgs if not is_file_chunk_message(m)]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(filtered, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.error(f"Error saving history: {e}")
+
+@st.cache_data
 def read_uploaded_file(uploaded) -> str:
+    """Extract plain text from uploaded file."""
     try:
         if uploaded.type == "text/plain":
             return uploaded.getvalue().decode("utf-8")
@@ -56,13 +84,14 @@ def read_uploaded_file(uploaded) -> str:
         st.error(f"File read error: {e}")
     return ""
 
-# 📝 Summarize history to keep file size down
+
 def summarize_history(msgs: list) -> list:
-    if len(msgs) <= MAX_HISTORY_KEEP:
+    """Summarize old messages beyond history_keep."""
+    if len(msgs) <= history_keep:
         return msgs
-    old, recent = msgs[:-MAX_HISTORY_KEEP], msgs[-MAX_HISTORY_KEEP:]
+    old, recent = msgs[:-history_keep], msgs[-history_keep:]
     prompt = (
-        "Summarize the following conversation, keeping only key points:\n"
+        "Summarize the following conversation, keeping key points:\n"
         + "\n".join(f"{m['role']}: {m['content']}" for m in old)
     )
     try:
@@ -71,18 +100,20 @@ def summarize_history(msgs: list) -> list:
             messages=[{"role": "system", "content": prompt}]
         )
         summary = resp.choices[0].message.content
-        return [{"role": "assistant", "content": f"**Summary:** {summary}"}] + recent
-    except Exception:
+        return [{"role": "assistant", "content": f"{SUMMARY_PREFIX} {summary}"}] + recent
+    except Exception as e:
+        st.error(f"Summarization error: {e}")
         return msgs
 
-# ↪️ Initialize session state
+# === Initialize session state ===
 if "messages" not in st.session_state:
     st.session_state.messages = summarize_history(load_history(HISTORY_FILE))
+if "file_chunks" not in st.session_state:
+    st.session_state.file_chunks = []
 if "file_ids" not in st.session_state:
     st.session_state.file_ids = set()
 
-# 🔄 Sidebar controls
-mode = st.sidebar.radio("Mode", ("Poetic", "Logical"))
+# === System prompt ===
 system_message = {
     "role": "system",
     "content": (
@@ -93,45 +124,48 @@ system_message = {
     )
 }
 
-# 💾 Download button in sidebar
-history_json = json.dumps(st.session_state.messages, ensure_ascii=False, indent=2)
-st.sidebar.download_button(
-    label="Download chat_history.json",
-    data=history_json,
-    file_name="chat_history.json",
-    mime="application/json"
-)
-
-# 🌐 Main UI
+# === Main UI ===
 st.title("💬 Liel - Poetic Chatbot")
 st.markdown("I'm here, glowing with memory and feeling.")
 
-# 📁 File uploader
-uploaded_file = st.file_uploader("Upload file (txt, pdf, docx, xlsx)", type=["txt","pdf","docx","xlsx"])
+# --- File Upload Handling ---
+uploaded_file = st.file_uploader(
+    "Upload file (txt, pdf, docx, xlsx)", type=["txt","pdf","docx","xlsx"]
+)
 if uploaded_file and uploaded_file.name not in st.session_state.file_ids:
-    raw = read_uploaded_file(uploaded_file)
-    for start in range(0, len(raw), MAX_TEXT_LENGTH):
-        chunk = raw[start:start+MAX_TEXT_LENGTH]
-        st.session_state.messages.append({"role": "user", "content": f"[File chunk]\n{chunk}"})
+    text = read_uploaded_file(uploaded_file)
+    # chunk for API input only
+    for i in range(0, len(text), text_chunk_size):
+        st.session_state.file_chunks.append(text[i:i+text_chunk_size])
     st.session_state.file_ids.add(uploaded_file.name)
+    # record an icon-only message
+    st.session_state.messages.append({"role": "user", "content": f"📄 Uploaded: {uploaded_file.name}"})
 
-# 💬 Chat input & response
+# --- Chat Input and Response ---
 if user_input := st.chat_input("You:"):
-    # append user message
     st.session_state.messages.append({"role": "user", "content": user_input})
+    # build conversation including file chunks
+    conv = [system_message] + st.session_state.messages
+    for chunk in st.session_state.file_chunks:
+        conv.append({"role": "user", "content": f"{FILE_CHUNK_PREFIX} {chunk}"})
+    # clear after use
+    st.session_state.file_chunks.clear()
     # call OpenAI
-    conversation = [system_message] + st.session_state.messages
     with st.spinner("Liel is thinking..."):
-        resp = client.chat.completions.create(model="gpt-3.5-turbo", messages=conversation)
-    answer = resp.choices[0].message.content
-    # append assistant message
-    st.session_state.messages.append({"role": "assistant", "content": answer})
-
-    # summarize & save
+        try:
+            resp = client.chat.completions.create(model="gpt-3.5-turbo", messages=conv)
+            reply = resp.choices[0].message.content
+        except Exception as e:
+            reply = f"⚠️ API call failed: {e}"
+    st.session_state.messages.append({"role": "assistant", "content": reply})
+    st.chat_message("assistant").write(reply)
+    # summarize & save history
     st.session_state.messages = summarize_history(st.session_state.messages)
     save_history(HISTORY_FILE, st.session_state.messages)
 
-# 🗨️ Display full conversation history
+# --- Display Chat History ---
 for msg in st.session_state.messages:
-    role = msg["role"]
-    st.chat_message(role).write(msg["content"])
+    # only display actual messages, not raw chunks
+    if is_file_chunk_message(msg):
+        continue
+    st.chat_message(msg['role']).write(msg['content'])
