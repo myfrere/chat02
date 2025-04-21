@@ -179,6 +179,7 @@ def load_history(path: str) -> List[Dict[str, str]]:
         logging.error(f"Error loading history from {path}: {e}", exc_info=True)
         return []
 
+
 def save_history(path: str, msgs: List[Dict[str, str]]):
     """대화 기록을 JSON 파일에 저장합니다."""
     try:
@@ -188,6 +189,7 @@ def save_history(path: str, msgs: List[Dict[str, str]]):
     except Exception as e:
         st.error(f"대화 기록 저장 중 오류 발생: {e}")
         logging.error(f"Error saving history to {path}: {e}", exc_info=True)
+
 
 # ------------------------------------------------------------------
 # SESSION STATE INITIALIZATION
@@ -213,6 +215,7 @@ MAX_CONTEXT_TOKENS = MODEL_CONTEXT_LIMITS.get(MODEL, 4096)
 
 MODE = st.sidebar.radio('응답 모드', ('Poetic', 'Logical'), index=0, key='mode_selection')
 
+
 st.sidebar.markdown("---")
 st.sidebar.subheader("관리")
 
@@ -229,6 +232,7 @@ if st.sidebar.button("🧹 대화 및 문서 요약 초기화"):
             st.sidebar.error(f"기록 파일 삭제 실패: {e}")
             logging.error(f"Failed to remove history file {HISTORY_FILE}: {e}")
     st.rerun()
+
 
 # ------------------------------------------------------------------
 # SYSTEM PROMPT DEFINITION
@@ -305,6 +309,7 @@ def summarize_document(text: str, filename: str, model: str, tokenizer: tiktoken
             summaries.append(f"(청크 {i+1} 요약 실패)")
             summary_errors.append(error_msg)
 
+
     progress_bar.empty()
     full_summary = '\n'.join(summaries)
     logging.info(f"Finished summarization for '{filename}'.")
@@ -332,7 +337,7 @@ if uploaded_file is not None:
             if read_error:
                 st.error(f"'{filename}' 파일 읽기 실패: {read_error}")
             elif not file_content:
-                 st.warning(f"'{filename}' 파일 내용이 비어 있습니다. 요약을 건너<0xEB><0x82><0xAC>니다.")
+                st.warning(f"'{filename}' 파일 내용이 비어 있습니다. 요약을 건너<0xEB><0x82><xAC>니다.")
             else:
                 tokenizer = get_tokenizer()
                 summary, summary_error = summarize_document(file_content, filename, MODEL, tokenizer)
