@@ -28,8 +28,10 @@ MODEL_CONTEXT_LIMITS = {
     "gpt-4-32k": 32768,
     "gpt-4o": 128000,
     "gpt-4-turbo": 128000,
+    "gpt-4o-mini": 128000, # gpt-4o-mini의 컨텍스트 제한 추가
 }
-MULTIMODAL_VISION_MODELS = ["gpt-4o", "gpt-4-turbo"]
+# gpt-4o-mini 모델 추가
+MULTIMODAL_VISION_MODELS = ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini"] # 멀티모달 지원 모델 목록
 
 DEFAULT_ENCODING = "cl100k_base"
 CHUNK_SIZE = 2000
@@ -280,6 +282,7 @@ if 'uploaded_image_for_next_prompt' not in st.session_state:
 # ------------------------------------------------------------------
 st.sidebar.title("⚙️ 설정")
 
+# gpt-4o-mini 모델 추가
 MODEL = st.sidebar.selectbox(
     '모델 선택 (멀티모달 지원)',
     MULTIMODAL_VISION_MODELS,
@@ -349,23 +352,6 @@ if [msg for msg in st.session_state.messages if msg['role'] != 'system'] or st.s
     )
 
 # --- Clear Button: Removed ---
-# if st.sidebar.button("🔄 대화 및 문서 요약 초기화"):
-#     st.session_state.messages = []
-#     st.session_state.doc_summaries = {}
-#     st.session_state.processed_file_keys = set()
-#     st.session_state.file_to_summarize = None
-#     st.session_state.file_info_to_process_safely_captured_by_key = None
-#     st.session_state.uploaded_image_for_next_prompt = None
-#
-#     if os.path.exists(HISTORY_FILE):
-#         try:
-#             os.remove(HISTORY_FILE)
-#             logging.info(f"History file {HISTORY_FILE} removed.")
-#             st.sidebar.success("대화 기록 파일이 삭제되었습니다.")
-#         except OSError as e:
-#             logging.error(f"Failed to remove history file {HISTORY_FILE}: {e}")
-#             st.sidebar.error(f"기록 파일 삭제 실패: {e}")
-#     st.rerun()
 
 
 # ------------------------------------------------------------------
@@ -410,7 +396,6 @@ logging.info(f"Uploaded file state: {uploaded_file is not None}")
 if uploaded_file is not None:
     logging.info(f"Step 1: uploaded_file is NOT None. Processing potential file.")
 
-    # Attempt to capture file details using a simple key (name+size)
     try:
         file_name_now = uploaded_file.name
         file_size_now = uploaded_file.size
@@ -481,7 +466,7 @@ if captured_info_by_key is not None and captured_info_by_key['simple_key'] not i
 
          logging.info(f"Step 2: Displaying image {file_info_to_process['name']} in chat message.")
          with st.chat_message("user"):
-             st.image(file_info_to_process['bytes'], caption=f"업로드된 이미지: {file_info_to_process['name']}", use_container_width=True) # Updated parameter
+             st.image(file_info_to_process['bytes'], caption=f"업로드된 이미지: {file_info_to_process['name']}", use_container_width=True)
 
          logging.info("Step 2: Triggering rerun after queuing image.")
          st.rerun()
@@ -581,7 +566,6 @@ for message in msgs_to_display:
                           header, base64_data = image_url.split(',')
                           image_bytes = base64.b64decode(base64_data)
                           image_type = header.split(':')[1].split(';')[0] if ':' in header and ';' in header else 'image/png'
-                          # Updated parameter
                           st.image(image_bytes, use_container_width=True)
                       except Exception as e:
                            logging.error(f"Error displaying image from multimodal message in history: {e}", exc_info=True)
@@ -635,7 +619,6 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
                           header, base64_data = image_url.split(',')
                           image_bytes = base64.b64decode(base64_data)
                           image_type = header.split(':')[1].split(';')[0] if ':' in header and ';' in header else 'image/png'
-                          # Updated parameter
                           st.image(image_bytes, use_container_width=True)
                       except Exception as e:
                            logging.error(f"Error displaying image from multimodal message in chat area: {e}", exc_info=True)
@@ -760,4 +743,4 @@ if prompt := st.chat_input("여기에 메시지를 입력하세요..."):
 
 # --- Footer or additional info ---
 st.sidebar.markdown("---")
-st.sidebar.caption("Liel Chatbot v1.7.7 (클리어 버튼 삭제 및 경고 수정)") # 버전 및 상태 업데이트
+st.sidebar.caption("Liel Chatbot v1.7.8 (gpt-4o-mini 추가 및 버튼 삭제)") # 버전 및 상태 업데이트
