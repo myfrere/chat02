@@ -86,35 +86,71 @@ if client is None:
 
 
 
+import streamlit as st
+
 def myGPT_250424():
     # 함수가 실행되었음을 알리는 메시지 출력
     st.write("myGPT : 250424가 실행되었습니다.")
 
     # 저장된 데이터를 로드하는 로직
+    # load_stored_data() 함수를 호출하여 데이터를 가져옵니다.
     data = load_stored_data()
 
     # 로드된 데이터를 기반으로 응답을 생성
     if data:
+        st.write("데이터 로드 성공. 응답을 생성합니다.") # 로드 성공 메시지 추가
         response = generate_response(data)
         st.write(response)
     else:
         st.write("저장된 데이터가 없습니다. 데이터를 업로드해 주세요.")
 
 def load_stored_data():
-    # 데이터베이스에서 데이터를 로드하거나, 파일 시스템에서 파일을 읽는 로직
-    # 여기에 데이터 로드 로직을 구현하세요
-    return stored_data
+    # *** 이 부분에 사용자의 실제 데이터 로드 로직을 구현해야 합니다. ***
+    # 현재는 NameError를 방지하고 함수의 기본 동작을 보여주기 위해 임시 데이터를 반환합니다.
+
+    # 예시 1: 임시 데이터 리스트 반환 (이 코드를 활성화하면 data가 None이 아니게 됩니다)
+    temp_data = ["샘플 데이터 1", "샘플 데이터 2", "샘플 데이터 3"]
+    print(">>> DEBUG: load_stored_data - 임시 데이터 로드 완료") # 디버깅용 출력
+    return temp_data
+
+    # 예시 2: 데이터가 없는 경우를 시뮬레이션하려면 위의 temp_data 반환 라인을 주석 처리하고 아래 라인을 활성화하세요.
+    # print(">>> DEBUG: load_stored_data - 로드할 데이터 없음 (시뮬레이션)") # 디버깅용 출력
+    # return None # 또는 [] 비어있는 리스트를 반환해도 됩니다.
+
+    # 실제 로직 예시 (주석 처리됨 - 필요에 따라 이 부분을 구현하세요):
+    # try:
+    #     # 예: 파일에서 데이터 읽기
+    #     file_path = "/path/to/your/data/file.txt" # 실제 파일 경로로 변경하세요
+    #     with open(file_path, "r", encoding='utf-8') as f:
+    #         loaded_content = f.read()
+    #         # 로드된 내용을 사용자가 원하는 데이터 구조(리스트, 딕셔너리 등)로 파싱/변환합니다.
+    #         # 예: 각 라인을 리스트 항목으로 분리
+    #         processed_data = loaded_content.splitlines()
+    #         print(">>> DEBUG: load_stored_data - 파일 데이터 로드 성공")
+    #         return processed_data
+    # except FileNotFoundError:
+    #     print(f">>> DEBUG: load_stored_data - 데이터 파일을 찾을 수 없습니다: {file_path}")
+    #     return None # 파일이 없으면 데이터 없음
+
+    # 실제 데이터 로드 로직을 완성한 후에는 위에 있는 임시 데이터 반환 코드를 제거하거나 주석 처리해야 합니다.
+
 
 def generate_response(data):
     # 데이터를 기반으로 응답을 생성하는 로직
     # 여기에 응답 생성 로직을 구현하세요
-    return "여기에 생성된 응답을 반환합니다."
-
-
+    print(f">>> DEBUG: generate_response - 데이터 받음 (개수: {len(data)})") # 디버깅용 출력
+    # 임시 응답 생성 예시
+    if data:
+        return f"받은 데이터를 기반으로 응답을 생성했습니다. 첫 번째 데이터: '{data[0]}'"
+    else:
+         return "처리할 데이터가 없습니다."
 
 
 # 실행
+print(">>> DEBUG: 프로그램 실행 시작") # 디버깅용 출력
 myGPT_250424()
+print(">>> DEBUG: 프로그램 실행 종료") # 디버깅용 출력
+
 
 # ------------------------------------------------------------------
 # HELPER FUNCTIONS
